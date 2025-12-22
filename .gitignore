@@ -1,0 +1,10 @@
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.sqlite-journal
+*.wal
+*.shm
+
+
