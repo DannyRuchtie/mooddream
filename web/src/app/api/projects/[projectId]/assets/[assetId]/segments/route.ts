@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { getProject } from "@/server/db/projects";
 import { getAsset } from "@/server/db/assets";
-import { getAssetSegment } from "@/server/db/ai";
+import { getAssetSegment, listAssetSegments } from "@/server/db/ai";
 
 export const runtime = "nodejs";
 
@@ -24,12 +24,26 @@ export async function GET(
   }
 
   const url = new URL(req.url);
-  const parsed = SegmentsQuery.safeParse({ term: url.searchParams.get("term") ?? "" });
-  if (!parsed.success) {
-    return Response.json({ error: "Invalid query" }, { status: 400 });
+  const termParam = url.searchParams.get("term") ?? "";
+  const termRaw = termParam.trim().toLowerCase();
+
+  // Backwards compatible:
+  // - When term is provided, return that segment (existing behavior used by the command palette highlight).
+  // - When term is omitted/empty, return all cached segments for this asset.
+  if (!termRaw) {
+    const segments = listAssetSegments(assetId).map((s) => ({
+      tag: s.tag,
+      svg: s.svg,
+      bboxJson: s.bbox_json,
+      updatedAt: s.updated_at,
+    }));
+    return Response.json({ projectId, assetId, segments });
   }
 
-  const term = parsed.data.term.trim().toLowerCase();
+  const parsed = SegmentsQuery.safeParse({ term: termRaw });
+  if (!parsed.success) return Response.json({ error: "Invalid query" }, { status: 400 });
+
+  const term = parsed.data.term;
   const seg = getAssetSegment({ assetId, tag: term });
   if (!seg) return Response.json({ error: "Not found" }, { status: 404 });
 

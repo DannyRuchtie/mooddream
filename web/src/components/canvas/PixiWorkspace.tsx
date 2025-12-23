@@ -4,20 +4,37 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as PIXI from "pixi.js";
 
 import type { AssetWithAi, CanvasObjectRow } from "@/server/db/types";
+import { AssetLightbox } from "@/components/lightbox/AssetLightbox";
 
 // Theme color used for the *viewport region* indicator inside the minimap.
 // Keep this aligned with the app's visual language (matches the existing selection blue).
 const THEME_ACCENT = 0x60a5fa; // blue-400
 const IMAGE_CORNER_RADIUS = 22; // in texture pixels at scale=1 (scales with zoom)
 
-type WorkspaceBackgroundMode = "dark" | "light";
+const WORKSPACE_BG_HEX = 0x0a0a0a; // slightly-off black
+const WORKSPACE_BG_CSS = "#0a0a0a";
 
-const WORKSPACE_BG = {
-  dark: { hex: 0x0a0a0a, css: "#0a0a0a" }, // slightly-off black
-  light: { hex: 0xf8fafc, css: "#f8fafc" }, // slightly-off white (slate-50)
-} satisfies Record<WorkspaceBackgroundMode, { hex: number; css: string }>;
+type MinimapTheme = {
+  bgHex: number;
+  bgAlpha: number;
+  strokeHex: number;
+  strokeAlpha: number;
+  shadeAlpha: number;
+};
 
-const WORKSPACE_BG_ANIM_MS = 320;
+const MINIMAP_W = 220;
+const MINIMAP_H = 160;
+const MINIMAP_MARGIN = 12;
+const MINIMAP_RADIUS = 10;
+const MINIMAP_PAD = 10;
+
+const MINIMAP_THEME: MinimapTheme = {
+  bgHex: 0x09090b,
+  bgAlpha: 0.88,
+  strokeHex: 0xffffff,
+  strokeAlpha: 0.1,
+  shadeAlpha: 0.28,
+};
 
 // Softer, subtler "card" shadow settings. These are in *texture pixels* at scale=1.
 // We animate between base↔lifted rather than snapping.
@@ -42,26 +59,14 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-function easeInOutCubic(t: number) {
-  const x = clamp(t, 0, 1);
-  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-}
-
-function hexToCss(hex: number) {
-  return `#${(hex >>> 0).toString(16).padStart(6, "0")}`;
-}
-
-function mixHexColor(a: number, b: number, t: number) {
-  const ar = (a >> 16) & 255;
-  const ag = (a >> 8) & 255;
-  const ab = a & 255;
-  const br = (b >> 16) & 255;
-  const bg = (b >> 8) & 255;
-  const bb = b & 255;
-  const rr = Math.round(lerp(ar, br, t));
-  const rg = Math.round(lerp(ag, bg, t));
-  const rb = Math.round(lerp(ab, bb, t));
-  return (rr << 16) | (rg << 8) | rb;
+function redrawMinimapBackground(
+  g: PIXI.Graphics,
+  theme: { bgHex: number; bgAlpha: number; strokeHex: number; strokeAlpha: number }
+) {
+  g.clear();
+  g.roundRect(0, 0, MINIMAP_W, MINIMAP_H, MINIMAP_RADIUS);
+  g.fill({ color: theme.bgHex, alpha: theme.bgAlpha });
+  g.stroke({ color: theme.strokeHex, width: 1, alpha: theme.strokeAlpha });
 }
 
 // Viewport zoom limits:
@@ -210,67 +215,15 @@ export function PixiWorkspace(props: {
   const [assets, setAssets] = useState<AssetWithAi[]>(props.initialAssets);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dropError, setDropError] = useState<string | null>(null);
+  const [lightboxAssetId, setLightboxAssetId] = useState<string | null>(null);
 
-  const workspaceBgModeRef = useRef<WorkspaceBackgroundMode>("dark");
-  const workspaceBgHexRef = useRef<number>(WORKSPACE_BG.dark.hex);
-  const workspaceBgRafRef = useRef<number | null>(null);
+  const objectsRef = useRef<CanvasObjectRow[]>(props.initialObjects);
+  useEffect(() => {
+    objectsRef.current = objects;
+  }, [objects]);
 
-  const applyWorkspaceBackgroundHex = (hex: number) => {
-    workspaceBgHexRef.current = hex;
-
-    const host = containerRef.current;
-    if (host) host.style.backgroundColor = hexToCss(hex);
-
-    const appAny = appRef.current as any;
-    const renderer = appAny?.renderer as any;
-    if (renderer) {
-      // Pixi v8: renderer.background.color
-      if (renderer.background && typeof renderer.background === "object") {
-        renderer.background.color = hex;
-      } else if ("backgroundColor" in renderer) {
-        renderer.backgroundColor = hex;
-      }
-    }
-    // Ensure the new clear color is visible immediately, even if Pixi isn't actively animating.
-    appAny?.render?.();
-  };
-
-  const animateWorkspaceBackgroundTo = (toHex: number) => {
-    const fromHex = workspaceBgHexRef.current;
-    if (fromHex === toHex) {
-      applyWorkspaceBackgroundHex(toHex);
-      return;
-    }
-
-    if (workspaceBgRafRef.current) cancelAnimationFrame(workspaceBgRafRef.current);
-    const start = performance.now();
-
-    const tick = (now: number) => {
-      const t = clamp((now - start) / WORKSPACE_BG_ANIM_MS, 0, 1);
-      const eased = easeInOutCubic(t);
-      const mixed = mixHexColor(fromHex, toHex, eased);
-      applyWorkspaceBackgroundHex(mixed);
-      if (t < 1) {
-        workspaceBgRafRef.current = requestAnimationFrame(tick);
-      } else {
-        workspaceBgRafRef.current = null;
-        applyWorkspaceBackgroundHex(toHex);
-      }
-    };
-
-    workspaceBgRafRef.current = requestAnimationFrame(tick);
-  };
-
-  const setWorkspaceBackgroundMode = (next: WorkspaceBackgroundMode, opts?: { animate?: boolean }) => {
-    workspaceBgModeRef.current = next;
-    const targetHex = WORKSPACE_BG[next].hex;
-    if (opts?.animate === false) applyWorkspaceBackgroundHex(targetHex);
-    else animateWorkspaceBackgroundTo(targetHex);
-  };
-
-  const toggleWorkspaceBackgroundMode = () => {
-    setWorkspaceBackgroundMode(workspaceBgModeRef.current === "dark" ? "light" : "dark");
-  };
+  const minimapThemeRef = useRef<MinimapTheme>(MINIMAP_THEME);
+  const minimapShadeAlphaRef = useRef<number>(MINIMAP_THEME.shadeAlpha);
 
   useEffect(() => {
     selectedIdsRef.current = selectedIds;
@@ -425,7 +378,7 @@ export function PixiWorkspace(props: {
         container: preview.root,
         target: preview.rt,
         clear: true,
-        clearColor: 0x0a0a0a,
+        clearColor: WORKSPACE_BG_HEX,
       });
 
       const cAny = app.renderer.extract.canvas({ target: preview.rt }) as any;
@@ -593,10 +546,30 @@ export function PixiWorkspace(props: {
           el.tagName === "TEXTAREA" ||
           (el as any).isContentEditable);
 
-      // Toggle workspace background mode with "1".
-      if (!isTyping && (e.key === "1" || e.code === "Digit1" || e.code === "Numpad1")) {
+      // Reset zoom to 10% with "0".
+      if (!isTyping && (e.key === "0" || e.code === "Digit0" || e.code === "Numpad0")) {
+        const app = appRef.current;
+        const world = worldRef.current;
+        if (!app || !world) return;
+
         e.preventDefault();
-        toggleWorkspaceBackgroundMode();
+
+        const center = new PIXI.Point(app.renderer.width / 2, app.renderer.height / 2);
+        const before = world.toLocal(center);
+        const nextScale = clamp(0.1, MIN_ZOOM, MAX_ZOOM);
+        if (world.scale.x !== nextScale || world.scale.y !== nextScale) {
+          world.scale.set(nextScale);
+          const after = world.toLocal(center);
+          world.position.x += (after.x - before.x) * world.scale.x;
+          world.position.y += (after.y - before.y) * world.scale.y;
+        }
+
+        scheduleViewSave({
+          world_x: world.position.x,
+          world_y: world.position.y,
+          zoom: world.scale.x,
+        });
+        schedulePreviewSave();
         return;
       }
 
@@ -661,13 +634,6 @@ export function PixiWorkspace(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Cleanup any in-flight background animation.
-  useEffect(() => {
-    return () => {
-      if (workspaceBgRafRef.current) cancelAnimationFrame(workspaceBgRafRef.current);
-    };
-  }, []);
-
   // Initialize Pixi
   useEffect(() => {
     const host = containerRef.current;
@@ -678,20 +644,17 @@ export function PixiWorkspace(props: {
     appRef.current = app;
 
     (async () => {
-      // Ensure the DOM behind the canvas matches our current workspace background.
-      host.style.backgroundColor = WORKSPACE_BG[workspaceBgModeRef.current].css;
+      // Ensure the DOM behind the canvas matches the Pixi clear color.
+      host.style.backgroundColor = WORKSPACE_BG_CSS;
 
       await app.init({
         resizeTo: host,
-        background: "#0a0a0a",
+        background: WORKSPACE_BG_CSS,
         antialias: true,
         autoDensity: true,
         resolution: window.devicePixelRatio || 1,
       });
       host.appendChild(app.canvas);
-
-      // Sync Pixi background to the current mode (without animating on boot).
-      setWorkspaceBackgroundMode(workspaceBgModeRef.current, { animate: false });
 
       const world = new PIXI.Container();
       world.sortableChildren = true;
@@ -713,9 +676,9 @@ export function PixiWorkspace(props: {
       }
 
       // Minimap overlay (screen-space)
-      const minimapW = 220;
-      const minimapH = 160;
-      const minimapMargin = 12;
+      const minimapW = MINIMAP_W;
+      const minimapH = MINIMAP_H;
+      const minimapMargin = MINIMAP_MARGIN;
       const minimapContainer = new PIXI.Container();
       minimapContainer.eventMode = "none";
       minimapContainer.visible = false;
@@ -723,16 +686,12 @@ export function PixiWorkspace(props: {
       app.stage.addChild(minimapContainer);
 
       const minimapBg = new PIXI.Graphics();
-      minimapBg.roundRect(0, 0, minimapW, minimapH, 10);
-      // Higher contrast minimap background.
-      minimapBg.fill({ color: 0x09090b, alpha: 0.88 });
-      // Subtle white border (10% opacity). Viewport indicator uses accent color.
-      minimapBg.stroke({ color: 0xffffff, width: 1, alpha: 0.1 });
+      redrawMinimapBackground(minimapBg, minimapThemeRef.current);
       minimapContainer.addChild(minimapBg);
 
       // Clip (overflow hidden) so the viewport outline can't render outside the minimap box.
       const minimapClipMask = new PIXI.Graphics();
-      minimapClipMask.roundRect(0, 0, minimapW, minimapH, 10);
+      minimapClipMask.roundRect(0, 0, minimapW, minimapH, MINIMAP_RADIUS);
       minimapClipMask.fill(0xffffff);
       // NOTE: In Pixi v8, `visible=false` on a geometry mask can prevent the mask from applying.
       // Keep it visible; it won't show up as a drawable layer, but it will correctly clip children.
@@ -771,6 +730,9 @@ export function PixiWorkspace(props: {
         showUntilMs: 0,
         targetAlpha: 0,
       };
+
+      // Ensure the minimap background matches the configured theme.
+      redrawMinimapBackground(minimapBg, minimapThemeRef.current);
 
       // Selection overlay layer
       const selectionLayer = new PIXI.Container();
@@ -1073,6 +1035,24 @@ export function PixiWorkspace(props: {
       // Disable context menu on canvas
       app.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
+      // Double click on an image => open fullscreen viewer with metadata.
+      // We keep this lightweight and non-invasive: it doesn't change selection or z-order.
+      app.canvas.addEventListener("dblclick", (e) => {
+        // Avoid opening while a gesture is active (e.g. drag/resize).
+        if (activeGestureRef.current) return;
+
+        const p = screenToRendererPoint(e.clientX, e.clientY);
+        const hit = app.renderer.events.rootBoundary.hitTest(p.x, p.y) as any;
+        if (!hit) return;
+        if (hit.__handle) return;
+        const objectId = hit.__objectId as string | undefined;
+        if (!objectId) return;
+
+        const o = objectsRef.current.find((x) => x.id === objectId);
+        if (!o || o.type !== "image" || !o.asset_id) return;
+        setLightboxAssetId(o.asset_id);
+      });
+
       const updateSelectionOverlay = () => {
         const selectionLayer = selectionLayerRef.current;
         const selectionBox = selectionBoxRef.current;
@@ -1221,7 +1201,7 @@ export function PixiWorkspace(props: {
           maxY = Math.max(maxY, sp.position.y + hh);
         }
 
-        const pad = 10;
+        const pad = MINIMAP_PAD;
         const innerW = minimapW - pad * 2;
         const innerH = minimapH - pad * 2;
 
@@ -1328,7 +1308,7 @@ export function PixiWorkspace(props: {
 
         // Shade everything outside the viewport (makes the visible area obvious).
         mm.shade.clear();
-        mm.shade.beginFill(0x000000, 0.28);
+        mm.shade.beginFill(0x000000, minimapShadeAlphaRef.current);
         // top
         mm.shade.drawRect(innerX0, innerY0, innerW, Math.max(0, ry - innerY0));
         // bottom
@@ -1677,6 +1657,13 @@ export function PixiWorkspace(props: {
         <div className="pointer-events-none absolute left-1/2 top-10 -translate-x-1/2 rounded-lg border border-red-900/50 bg-red-950/60 px-3 py-2 text-xs text-red-200">
           {dropError}
         </div>
+      ) : null}
+      {lightboxAssetId && assetById.get(lightboxAssetId) ? (
+        <AssetLightbox
+          projectId={props.projectId}
+          asset={assetById.get(lightboxAssetId)!}
+          onClose={() => setLightboxAssetId(null)}
+        />
       ) : null}
     </div>
   );

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from requests import RequestException
 
 _EMBEDDER = None
 _EMBEDDER_MODEL_NAME = None
@@ -44,6 +45,7 @@ class Job:
     original_name: str
     mime_type: str
     storage_path: str
+    sha256: str
 
 
 class ProviderError(Exception):
@@ -60,33 +62,84 @@ class MoondreamProvider:
     def segment(self, image_path: str, obj: str) -> Any:
         raise NotImplementedError
 
+    def query(self, image_path: str, question: str) -> str:
+        raise NotImplementedError
+
     def model_version(self) -> str:
         return "unknown"
 
 
 class LocalStationProvider(MoondreamProvider):
     def __init__(self, endpoint: str):
-        self.endpoint = endpoint.rstrip("/")
+        # Allow either base host (http://localhost:2021) or an already versioned
+        # endpoint (http://localhost:2021/v1). We normalize to the base host.
+        e = endpoint.rstrip("/")
+        if e.endswith("/v1"):
+            e = e[:-3]
+        self.endpoint = e
 
     def _encode_image_data_url(self, image_path: str) -> str:
-        # Mirror moondream_batch.py behavior: image_url is a data: URL.
+        """
+        Send images as a data: URL (Station supports this).
+
+        IMPORTANT: Some images can time out if we send the full-resolution bytes.
+        We therefore downscale + JPEG-encode by default for speed and reliability.
+        """
         import base64
+        import io
         import mimetypes
 
-        mime, _ = mimetypes.guess_type(image_path)
-        if not mime:
-            mime = "image/png"
-        with open(image_path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("ascii")
-        return f"data:{mime};base64,{data}"
+        # Allow opting out for debugging.
+        raw_mode = (os.getenv("MOONDREAM_RAW_IMAGE_BYTES", "0") or "0").lower() in ("1", "true", "yes")
+        if raw_mode:
+            mime, _ = mimetypes.guess_type(image_path)
+            if not mime:
+                mime = "image/png"
+            with open(image_path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            return f"data:{mime};base64,{data}"
+
+        max_side = int(os.getenv("MOONDREAM_MAX_IMAGE_SIDE", "1024") or "1024")
+        jpeg_quality = int(os.getenv("MOONDREAM_JPEG_QUALITY", "85") or "85")
+
+        try:
+            from PIL import Image  # type: ignore
+
+            with Image.open(image_path) as im:
+                im = im.convert("RGB")
+                w, h = im.size
+                if max_side > 0 and max(w, h) > max_side:
+                    scale = max_side / float(max(w, h))
+                    nw = max(1, int(round(w * scale)))
+                    nh = max(1, int(round(h * scale)))
+                    resample = getattr(Image, "Resampling", Image).LANCZOS
+                    im = im.resize((nw, nh), resample=resample)
+
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+                data = base64.b64encode(buf.getvalue()).decode("ascii")
+                return f"data:image/jpeg;base64,{data}"
+        except Exception:
+            # Fallback: raw bytes in a data URL.
+            mime, _ = mimetypes.guess_type(image_path)
+            if not mime:
+                mime = "image/png"
+            with open(image_path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            return f"data:{mime};base64,{data}"
 
     def caption(self, image_path: str, length: str = "normal") -> str:
         url = f"{self.endpoint}/v1/caption"
         body = {"stream": False, "length": length, "image_url": self._encode_image_data_url(image_path)}
-        r = requests.post(url, json=body, timeout=180)
+        try:
+            r = requests.post(url, json=body, timeout=180)
+        except RequestException as exc:
+            raise ProviderError(f"station caption request failed: {exc}") from exc
         if r.status_code >= 400:
             raise ProviderError(f"station caption failed: {r.status_code} {r.text}")
         data = r.json()
+        if isinstance(data, dict) and (data.get("error") or data.get("status") in ("rejected", "timeout")):
+            raise ProviderError(f"station caption error: {data}")
         caption = (data.get("caption") or data.get("text") or "").strip()
         if not caption:
             caption = json.dumps(data)
@@ -95,18 +148,47 @@ class LocalStationProvider(MoondreamProvider):
     def detect(self, image_path: str, obj: str) -> Any:
         url = f"{self.endpoint}/v1/detect"
         body = {"stream": False, "object": obj, "image_url": self._encode_image_data_url(image_path)}
-        r = requests.post(url, json=body, timeout=180)
+        try:
+            r = requests.post(url, json=body, timeout=180)
+        except RequestException as exc:
+            raise ProviderError(f"station detect request failed: {exc}") from exc
         if r.status_code >= 400:
             raise ProviderError(f"station detect failed: {r.status_code} {r.text}")
-        return r.json()
+        data = r.json()
+        if isinstance(data, dict) and (data.get("error") or data.get("status") in ("rejected", "timeout")):
+            raise ProviderError(f"station detect error: {data}")
+        return data
 
     def segment(self, image_path: str, obj: str) -> Any:
         url = f"{self.endpoint}/v1/segment"
         body = {"stream": False, "object": obj, "image_url": self._encode_image_data_url(image_path)}
-        r = requests.post(url, json=body, timeout=180)
+        try:
+            r = requests.post(url, json=body, timeout=180)
+        except RequestException as exc:
+            raise ProviderError(f"station segment request failed: {exc}") from exc
         if r.status_code >= 400:
             raise ProviderError(f"station segment failed: {r.status_code} {r.text}")
-        return r.json()
+        data = r.json()
+        if isinstance(data, dict) and (data.get("error") or data.get("status") in ("rejected", "timeout")):
+            raise ProviderError(f"station segment error: {data}")
+        return data
+
+    def query(self, image_path: str, question: str) -> str:
+        url = f"{self.endpoint}/v1/query"
+        body = {"stream": False, "question": question, "image_url": self._encode_image_data_url(image_path)}
+        try:
+            r = requests.post(url, json=body, timeout=180)
+        except RequestException as exc:
+            raise ProviderError(f"station query request failed: {exc}") from exc
+        if r.status_code >= 400:
+            raise ProviderError(f"station query failed: {r.status_code} {r.text}")
+        data = r.json()
+        if isinstance(data, dict) and (data.get("error") or data.get("status") in ("rejected", "timeout")):
+            raise ProviderError(f"station query error: {data}")
+        text = (data.get("answer") or data.get("text") or data.get("caption") or "").strip()
+        if not text:
+            text = json.dumps(data)
+        return text
 
     def model_version(self) -> str:
         return "moondream_station"
@@ -153,6 +235,9 @@ class HuggingFaceProvider(MoondreamProvider):
 
     def segment(self, image_path: str, obj: str) -> Any:
         raise ProviderError("segment is not supported for the huggingface provider in this worker")
+
+    def query(self, image_path: str, question: str) -> str:
+        raise ProviderError("query is not supported for the huggingface provider in this worker")
 
     def model_version(self) -> str:
         return "huggingface_endpoint"
@@ -206,7 +291,7 @@ def connect(db_path: str) -> sqlite3.Connection:
 def fetch_next_job(con: sqlite3.Connection) -> Optional[Job]:
     row = con.execute(
         """
-        SELECT a.id AS asset_id, a.project_id, a.original_name, a.mime_type, a.storage_path
+        SELECT a.id AS asset_id, a.project_id, a.original_name, a.mime_type, a.storage_path, a.sha256
         FROM assets a
         JOIN asset_ai ai ON ai.asset_id = a.id
         WHERE ai.status IN ('pending', 'processing') AND a.mime_type LIKE 'image/%'
@@ -222,6 +307,7 @@ def fetch_next_job(con: sqlite3.Connection) -> Optional[Job]:
         original_name=row["original_name"],
         mime_type=row["mime_type"],
         storage_path=row["storage_path"],
+        sha256=row["sha256"],
     )
 
 
@@ -518,6 +604,104 @@ def delete_segments_not_in(con: sqlite3.Connection, asset_id: str, keep_tags: Li
     )
 
 
+def _slugify_filename_base(text: str) -> str:
+    raw = (text or "").strip().lower()
+    # Keep it filesystem-friendly.
+    out: List[str] = []
+    dash = False
+    for ch in raw:
+        if "a" <= ch <= "z" or "0" <= ch <= "9":
+            out.append(ch)
+            dash = False
+        else:
+            if not dash:
+                out.append("-")
+                dash = True
+    slug = "".join(out).strip("-")
+    slug = "-".join([p for p in slug.split("-") if p])
+    # Reasonable length for filenames.
+    return slug[:64]
+
+
+def _pick_extension(job: Job) -> str:
+    ext = os.path.splitext(job.storage_path or "")[1]
+    if ext:
+        return ext
+    ext2 = os.path.splitext(job.original_name or "")[1]
+    return ext2 or ""
+
+
+def maybe_rename_asset(con: sqlite3.Connection, job: Job, caption: str, provider: MoondreamProvider) -> None:
+    """
+    Generate a nicer name via Moondream and:
+    - update assets.original_name (display/search)
+    - create a named alias file on disk (symlink) without touching the content-addressed storage file
+    """
+    if (os.getenv("MOONDREAM_GENERATE_NAMES", "1") or "1") in ("0", "false", "False"):
+        return
+
+    # Ask Moondream for a concise title for the image.
+    prompt = (
+        "Give a short descriptive title for this image suitable as a filename. "
+        "Respond with ONLY the title words (no punctuation, no quotes), max 6 words."
+    )
+    title = ""
+    try:
+        title = provider.query(job.storage_path, prompt).strip()
+    except Exception:
+        title = ""
+
+    # Fallback: derive from caption if query fails.
+    if not title:
+        title = (caption or "").strip()
+    if not title:
+        return
+
+    base = _slugify_filename_base(title)
+    if not base:
+        return
+
+    ext = _pick_extension(job)
+    sha8 = (job.sha256 or "")[:8]
+    suffix = f"--{sha8}" if sha8 else ""
+    pretty = f"{base}{suffix}{ext}"
+
+    # Update DB display name.
+    con.execute("UPDATE assets SET original_name = ? WHERE id = ?", (pretty, job.asset_id))
+
+    # Create a friendly alias on disk (symlink) so the user has a readable filename too.
+    if (os.getenv("MOONDREAM_CREATE_NAMED_ALIAS", "1") or "1") in ("0", "false", "False"):
+        return
+
+    try:
+        # storage_path: .../data/projects/<projectId>/assets/<sha>.ext
+        project_root = os.path.dirname(os.path.dirname(job.storage_path))
+        named_dir = os.path.join(project_root, "named")
+        os.makedirs(named_dir, exist_ok=True)
+
+        link_path = os.path.join(named_dir, pretty)
+
+        # Best-effort cleanup of prior aliases for this asset (same sha8 + ext).
+        if sha8 and ext:
+            for fn in os.listdir(named_dir):
+                if fn.endswith(f"--{sha8}{ext}") and fn != pretty:
+                    try:
+                        os.unlink(os.path.join(named_dir, fn))
+                    except Exception:
+                        pass
+
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            try:
+                os.unlink(link_path)
+            except Exception:
+                pass
+
+        os.symlink(job.storage_path, link_path)
+    except Exception:
+        # Don't fail the whole job on filesystem alias issues.
+        return
+
+
 def main() -> int:
     db_path = os.getenv("MOONDREAM_DB_PATH", default_db_path())
     poll = float(os.getenv("MOONDREAM_POLL_SECONDS", "1.0"))
@@ -590,6 +774,9 @@ def main() -> int:
                     model_version=provider.model_version(),
                 )
 
+                # Generate a nicer filename + create a named alias file (best-effort).
+                maybe_rename_asset(con, job, caption=caption, provider=provider)
+
                 if emb_model and emb_dim and emb_blob:
                     upsert_embedding_row(
                         con,
@@ -618,6 +805,40 @@ def main() -> int:
                 update_search_index(con, job.asset_id)
                 con.execute("COMMIT")
                 print(f"[worker] done asset={job.asset_id}")
+            except ProviderError as exc:
+                # Treat station-side queue/timeouts as transient; re-queue with a small backoff.
+                msg = str(exc).lower()
+                transient = any(k in msg for k in ("queue is full", "rejected", "timeout", "timed out"))
+                con.execute("BEGIN")
+                if transient:
+                    # Re-queue without poisoning the caption field.
+                    write_results(
+                        con,
+                        job.asset_id,
+                        caption="",
+                        tags=[],
+                        status="pending",
+                        model_version=provider.model_version(),
+                    )
+                    delete_segments_not_in(con, job.asset_id, [])
+                    update_search_index(con, job.asset_id)
+                    con.execute("COMMIT")
+                    sleep_s = float(os.getenv("MOONDREAM_RETRY_BACKOFF_SECONDS", "5.0"))
+                    print(f"[worker] transient error; re-queued asset={job.asset_id}: {exc} (sleep {sleep_s}s)")
+                    time.sleep(sleep_s)
+                else:
+                    write_results(
+                        con,
+                        job.asset_id,
+                        caption="",
+                        tags=[],
+                        status="failed",
+                        model_version=provider.model_version(),
+                    )
+                    delete_segments_not_in(con, job.asset_id, [])
+                    update_search_index(con, job.asset_id)
+                    con.execute("COMMIT")
+                    print(f"[worker] failed asset={job.asset_id}: {exc}")
             except Exception as exc:
                 con.execute("BEGIN")
                 write_results(

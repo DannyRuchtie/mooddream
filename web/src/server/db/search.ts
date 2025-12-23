@@ -7,6 +7,9 @@ function buildFtsQuery(raw: string) {
     .trim()
     .split(/\s+/g)
     .map((t) => t.replace(/["']/g, "").trim())
+    // FTS5 query syntax is picky (e.g. dots in filenames can error).
+    // Keep only alphanumerics/underscore; treat the rest as separators.
+    .map((t) => t.replace(/[^a-zA-Z0-9_]+/g, "").trim())
     .filter(Boolean);
   if (tokens.length === 0) return "";
   // Prefix match each token for a more forgiving UX.

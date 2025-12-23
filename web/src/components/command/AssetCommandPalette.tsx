@@ -70,14 +70,12 @@ export function AssetCommandPalette(props: {
             : "hidden"
         }
       >
-        <Command
-          value={search}
-          onValueChange={setSearch}
-          className="flex flex-col overflow-hidden"
-        >
+        <Command className="flex flex-col overflow-hidden">
           <div className="border-b border-zinc-900 p-3">
             <Command.Input
               autoFocus
+              value={search}
+              onValueChange={setSearch}
               placeholder="Search assets…"
               className="w-full bg-transparent text-sm outline-none placeholder:text-zinc-600"
             />
