@@ -21,6 +21,29 @@ function smoothstep01(t: number) {
   return 0.12 + 0.88 * y;
 }
 
+function normalizeZOrder(
+  prev: CanvasObjectRow[],
+  bringToFrontIds: string[]
+): CanvasObjectRow[] {
+  if (!bringToFrontIds.length) return prev;
+  const front = new Set(bringToFrontIds);
+
+  const ordered = [...prev].sort((a, b) => {
+    if (a.z_index !== b.z_index) return a.z_index - b.z_index;
+    return a.id.localeCompare(b.id);
+  });
+
+  const back = ordered.filter((o) => !front.has(o.id));
+  const frontItems = ordered.filter((o) => front.has(o.id));
+  const nextOrdered = [...back, ...frontItems];
+
+  // Reassign z-index densely: others become lower, selected become highest.
+  const now = new Date().toISOString();
+  return nextOrdered.map((o, idx) =>
+    o.z_index === idx ? o : { ...o, z_index: idx, updated_at: now }
+  );
+}
+
 export function PixiWorkspace(props: {
   projectId: string;
   initialAssets: AssetWithAi[];
@@ -36,22 +59,25 @@ export function PixiWorkspace(props: {
   const spritesByObjectIdRef = useRef<Map<string, PIXI.Sprite>>(new Map());
   const textureCacheRef = useRef<Map<string, PIXI.Texture>>(new Map());
   const texturePromiseRef = useRef<Map<string, Promise<PIXI.Texture>>>(new Map());
-  const selectedObjectIdRef = useRef<string | null>(null);
+  const selectedIdsRef = useRef<string[]>([]);
   const selectionLayerRef = useRef<PIXI.Container | null>(null);
   const selectionBoxRef = useRef<PIXI.Graphics | null>(null);
   const handleRefs = useRef<Record<string, PIXI.Graphics>>({});
+  const multiSelectionRef = useRef<PIXI.Graphics | null>(null);
   const minimapRef = useRef<{
     container: PIXI.Container;
     bg: PIXI.Graphics;
-    content: PIXI.Graphics;
+    items: PIXI.Container;
+    spriteById: Map<string, PIXI.Sprite>;
+    overlay: PIXI.Graphics;
     viewport: PIXI.Graphics;
-    hideAtMs: number;
-    visible: boolean;
+    showUntilMs: number;
+    targetAlpha: number;
   } | null>(null);
   const activeGestureRef = useRef<
     | null
     | { kind: "pan"; last: PIXI.Point }
-    | { kind: "move"; objectId: string; last: PIXI.Point }
+    | { kind: "move"; objectIds: string[]; last: PIXI.Point }
     | {
         kind: "resize";
         objectId: string;
@@ -66,12 +92,12 @@ export function PixiWorkspace(props: {
 
   const [objects, setObjects] = useState<CanvasObjectRow[]>(props.initialObjects);
   const [assets, setAssets] = useState<AssetWithAi[]>(props.initialAssets);
-  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dropError, setDropError] = useState<string | null>(null);
 
   useEffect(() => {
-    selectedObjectIdRef.current = selectedObjectId;
-  }, [selectedObjectId]);
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
 
   useEffect(() => setAssets(props.initialAssets), [props.initialAssets]);
   useEffect(() => {
@@ -127,6 +153,40 @@ export function PixiWorkspace(props: {
     return m;
   }, [assets]);
 
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const primarySelectedId = selectedIds.length === 1 ? selectedIds[0] : null;
+
+  // Keyboard delete/backspace to remove selected objects from canvas + DB (via canvas save).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace" && e.key !== "Delete") return;
+      // Don't intercept when typing.
+      const el = document.activeElement as HTMLElement | null;
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          (el as any).isContentEditable)
+      ) {
+        return;
+      }
+      const ids = selectedIdsRef.current;
+      if (!ids || ids.length === 0) return;
+      e.preventDefault();
+      setSelectedIds([]);
+      setObjects((prev) => {
+        const remove = new Set(ids);
+        const next = prev.filter((o) => !remove.has(o.id));
+        scheduleEmitObjectsChange(next);
+        scheduleSave(next);
+        return next;
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Initialize Pixi
   useEffect(() => {
     const host = containerRef.current;
@@ -164,28 +224,38 @@ export function PixiWorkspace(props: {
       const minimapContainer = new PIXI.Container();
       minimapContainer.eventMode = "none";
       minimapContainer.visible = false;
-      minimapContainer.alpha = 0.95;
+      minimapContainer.alpha = 0;
       app.stage.addChild(minimapContainer);
 
       const minimapBg = new PIXI.Graphics();
       minimapBg.roundRect(0, 0, minimapW, minimapH, 10);
-      minimapBg.fill({ color: 0x050505, alpha: 0.65 });
-      minimapBg.stroke({ color: 0x27272a, width: 1, alpha: 0.9 });
+      // Higher contrast minimap background.
+      minimapBg.fill({ color: 0x09090b, alpha: 0.88 });
+      minimapBg.stroke({ color: 0x52525b, width: 1, alpha: 0.95 });
       minimapContainer.addChild(minimapBg);
 
       // Clip (overflow hidden) so the viewport outline can't render outside the minimap box.
       const minimapClipMask = new PIXI.Graphics();
       minimapClipMask.roundRect(0, 0, minimapW, minimapH, 10);
       minimapClipMask.fill(0xffffff);
-      minimapClipMask.visible = false;
+      // NOTE: In Pixi v8, `visible=false` on a geometry mask can prevent the mask from applying.
+      // Keep it visible; it won't show up as a drawable layer, but it will correctly clip children.
+      minimapClipMask.visible = true;
       minimapContainer.addChild(minimapClipMask);
 
       const minimapClipLayer = new PIXI.Container();
       minimapClipLayer.mask = minimapClipMask;
       minimapContainer.addChild(minimapClipLayer);
 
-      const minimapContent = new PIXI.Graphics();
-      minimapClipLayer.addChild(minimapContent);
+      // Layer order inside the minimap:
+      // 1) item sprites (preview)
+      // 2) overlay (optional outlines)
+      // 3) viewport border
+      const minimapItems = new PIXI.Container();
+      minimapClipLayer.addChild(minimapItems);
+
+      const minimapOverlay = new PIXI.Graphics();
+      minimapClipLayer.addChild(minimapOverlay);
 
       const minimapViewport = new PIXI.Graphics();
       minimapClipLayer.addChild(minimapViewport);
@@ -193,10 +263,12 @@ export function PixiWorkspace(props: {
       minimapRef.current = {
         container: minimapContainer,
         bg: minimapBg,
-        content: minimapContent,
+        items: minimapItems,
+        spriteById: new Map(),
+        overlay: minimapOverlay,
         viewport: minimapViewport,
-        hideAtMs: 0,
-        visible: false,
+        showUntilMs: 0,
+        targetAlpha: 0,
       };
 
       // Selection overlay layer
@@ -208,6 +280,10 @@ export function PixiWorkspace(props: {
       const selectionBox = new PIXI.Graphics();
       selectionBoxRef.current = selectionBox;
       selectionLayer.addChild(selectionBox);
+
+      const multiSel = new PIXI.Graphics();
+      multiSelectionRef.current = multiSel;
+      world.addChild(multiSel);
 
       const makeHandle = (corner: "tl" | "tr" | "br" | "bl") => {
         const g = new PIXI.Graphics();
@@ -258,7 +334,7 @@ export function PixiWorkspace(props: {
         const hit = app.renderer.events.rootBoundary.hitTest(last.x, last.y) as any;
 
         // Resize handle hit?
-        const selectedId = selectedObjectIdRef.current;
+        const selectedId = selectedIdsRef.current.length === 1 ? selectedIdsRef.current[0] : null;
         if (hit && hit.__handle && selectedId) {
           const corner = hit.__handle.corner as "tl" | "tr" | "br" | "bl";
           const sp = spritesByObjectIdRef.current.get(selectedId);
@@ -290,13 +366,43 @@ export function PixiWorkspace(props: {
         // Object hit?
         if (hit && hit.__objectId) {
           const objectId = hit.__objectId as string;
-          setSelectedObjectId(objectId);
-          activeGestureRef.current = { kind: "move", objectId, last };
+          const shift = (e as PointerEvent).shiftKey;
+
+          // Compute the next selection immediately so we can also update z-order deterministically.
+          const currentSel = selectedIdsRef.current ?? [];
+          let nextSel: string[];
+          if (shift) {
+            const set = new Set(currentSel);
+            if (set.has(objectId)) set.delete(objectId);
+            else set.add(objectId);
+            nextSel = Array.from(set);
+          } else {
+            nextSel = [objectId];
+          }
+          setSelectedIds(nextSel);
+
+          // Bring selected to front: selected get highest z_index, everyone else shifts down.
+          setObjects((prev) => {
+            const next = normalizeZOrder(prev, nextSel);
+            scheduleEmitObjectsChange(next);
+            scheduleSave(next);
+            return next;
+          });
+
+          // Move all selected items (or just this one if none selected yet).
+          const ids = selectedIdsRef.current;
+          const moveIds =
+            ids && ids.length > 0 && (shift ? true : ids.includes(objectId))
+              ? ids.includes(objectId)
+                ? ids
+                : [objectId]
+              : [objectId];
+          activeGestureRef.current = { kind: "move", objectIds: nextSel.length ? nextSel : moveIds, last };
           return;
         }
 
         // Background pan
-        setSelectedObjectId(null);
+        if (!(e as PointerEvent).shiftKey) setSelectedIds([]);
         activeGestureRef.current = { kind: "pan", last };
       });
 
@@ -321,26 +427,31 @@ export function PixiWorkspace(props: {
         }
 
         if (gesture.kind === "move") {
-          const sprite = spritesByObjectIdRef.current.get(gesture.objectId);
-          if (!sprite) return;
+          const sprites = gesture.objectIds
+            .map((id) => [id, spritesByObjectIdRef.current.get(id)] as const)
+            .filter(([, sp]) => !!sp) as Array<[string, PIXI.Sprite]>;
+          if (sprites.length === 0) return;
           const dx = cur.x - gesture.last.x;
           const dy = cur.y - gesture.last.y;
           const inv = 1 / (world.scale.x || 1);
-          sprite.position.x += dx * inv;
-          sprite.position.y += dy * inv;
-          activeGestureRef.current = { kind: "move", objectId: gesture.objectId, last: cur };
+          for (const [, sp] of sprites) {
+            sp.position.x += dx * inv;
+            sp.position.y += dy * inv;
+          }
+          activeGestureRef.current = { kind: "move", objectIds: gesture.objectIds, last: cur };
 
           setObjects((prev) => {
-            const next = prev.map((o) =>
-              o.id === gesture.objectId
-                ? {
-                    ...o,
-                    x: sprite.position.x,
-                    y: sprite.position.y,
-                    updated_at: new Date().toISOString(),
-                  }
-                : o
-            );
+            const byId = new Map<string, PIXI.Sprite>(sprites);
+            const next = prev.map((o) => {
+              const sp = byId.get(o.id);
+              if (!sp) return o;
+              return {
+                ...o,
+                x: sp.position.x,
+                y: sp.position.y,
+                updated_at: new Date().toISOString(),
+              };
+            });
             scheduleEmitObjectsChange(next);
             scheduleSave(next);
             return next;
@@ -441,7 +552,8 @@ export function PixiWorkspace(props: {
         if (!selectionLayer || !selectionBox) return;
         const handles = handleRefs.current as any;
 
-        const selectedId = selectedObjectIdRef.current;
+        const selected = selectedIdsRef.current;
+        const selectedId = selected.length === 1 ? selected[0] : null;
         const sprite = selectedId ? spritesByObjectIdRef.current.get(selectedId) : null;
         const baseW = sprite?.texture?.orig?.width ?? 0;
         const baseH = sprite?.texture?.orig?.height ?? 0;
@@ -473,15 +585,37 @@ export function PixiWorkspace(props: {
         }
       };
 
+      const updateMultiSelection = () => {
+        const g = multiSelectionRef.current;
+        if (!g) return;
+        const selected = selectedIdsRef.current;
+        if (!selected || selected.length <= 1) {
+          g.clear();
+          return;
+        }
+        const worldScale = world.scale.x || 1;
+        const strokeW = 2 / Math.max(0.0001, worldScale);
+        g.clear();
+        g.lineStyle(strokeW, 0x60a5fa, 0.9);
+        for (const id of selected) {
+          const sp = spritesByObjectIdRef.current.get(id);
+          if (!sp) continue;
+          const w = sp.texture?.orig?.width ?? 0;
+          const h = sp.texture?.orig?.height ?? 0;
+          if (w <= 0 || h <= 0) continue;
+          const bw = w * sp.scale.x;
+          const bh = h * sp.scale.y;
+          g.drawRect(sp.position.x - bw / 2, sp.position.y - bh / 2, bw, bh);
+        }
+      };
+
       const showMinimap = () => {
         const mm = minimapRef.current;
         if (!mm) return;
         const now = performance.now();
-        mm.hideAtMs = now + 1000; // hide after 1s idle
-        if (!mm.visible) {
-          mm.visible = true;
-          mm.container.visible = true;
-        }
+        mm.showUntilMs = now + 2500;
+        mm.targetAlpha = 1;
+        mm.container.visible = true;
       };
 
       const updateMinimap = () => {
@@ -494,19 +628,27 @@ export function PixiWorkspace(props: {
           app.renderer.height - minimapH - minimapMargin
         );
 
-        if (!mm.visible) return;
         const now = performance.now();
-        if (now > mm.hideAtMs) {
-          mm.visible = false;
+        if (now > mm.showUntilMs) mm.targetAlpha = 0;
+
+        // Fade in/out smoothly.
+        const fadeSpeed = 0.18;
+        mm.container.alpha += (mm.targetAlpha - mm.container.alpha) * fadeSpeed;
+        if (mm.container.alpha < 0.02 && mm.targetAlpha === 0) {
           mm.container.visible = false;
           return;
         }
+        if (!mm.container.visible) return;
 
-        // Compute world bounds from sprites
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
+        const topLeftWorld = world.toLocal(new PIXI.Point(0, 0));
+        const bottomRightWorld = world.toLocal(
+          new PIXI.Point(app.renderer.width, app.renderer.height)
+        );
+        // Minimap bounds are always viewport + objects union.
+        let minX = Math.min(topLeftWorld.x, bottomRightWorld.x);
+        let maxX = Math.max(topLeftWorld.x, bottomRightWorld.x);
+        let minY = Math.min(topLeftWorld.y, bottomRightWorld.y);
+        let maxY = Math.max(topLeftWorld.y, bottomRightWorld.y);
 
         for (const sp of spritesByObjectIdRef.current.values()) {
           const w = sp.texture?.orig?.width ?? 0;
@@ -520,16 +662,16 @@ export function PixiWorkspace(props: {
           maxY = Math.max(maxY, sp.position.y + hh);
         }
 
-        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) {
-          // Nothing to show yet
-          mm.content.clear();
-          mm.viewport.clear();
-          return;
-        }
-
         const pad = 10;
         const innerW = minimapW - pad * 2;
         const innerH = minimapH - pad * 2;
+
+        // Add a little world padding so dots and viewport aren't flush to edges.
+        const worldPad = Math.max(10, Math.max(maxX - minX, maxY - minY) * 0.06);
+        minX -= worldPad;
+        maxX += worldPad;
+        minY -= worldPad;
+        maxY += worldPad;
 
         const worldW = Math.max(1, maxX - minX);
         const worldH = Math.max(1, maxY - minY);
@@ -541,41 +683,79 @@ export function PixiWorkspace(props: {
         const wxToMx = (x: number) => offsetX + (x - minX) * s;
         const wyToMy = (y: number) => offsetY + (y - minY) * s;
 
-        // Draw objects as rectangles
-        mm.content.clear();
-        mm.content.stroke({ color: 0x3f3f46, width: 1, alpha: 0.9 });
-        mm.content.fill({ color: 0x0f172a, alpha: 0.35 });
-
+        // Draw items as a scaled preview of the canvas (same textures, scaled to match world size).
+        const seen = new Set<string>();
+        const selected = new Set(selectedIdsRef.current ?? []);
         for (const sp of spritesByObjectIdRef.current.values()) {
-          const w = sp.texture?.orig?.width ?? 0;
-          const h = sp.texture?.orig?.height ?? 0;
+          const id = (sp as any).__objectId as string | undefined;
+          if (!id) continue;
+          const tex = sp.texture;
+          const w = tex?.orig?.width ?? 0;
+          const h = tex?.orig?.height ?? 0;
           if (w <= 0 || h <= 0) continue;
-          const bw = w * sp.scale.x;
-          const bh = h * sp.scale.y;
-          const x0 = wxToMx(sp.position.x - bw / 2);
-          const y0 = wyToMy(sp.position.y - bh / 2);
-          mm.content.rect(x0, y0, bw * s, bh * s);
+          seen.add(id);
+
+          let mini = mm.spriteById.get(id);
+          if (!mini) {
+            mini = new PIXI.Sprite(tex);
+            mini.anchor.set(0.5);
+            mini.eventMode = "none";
+            mm.items.addChild(mini);
+            mm.spriteById.set(id, mini);
+          } else if (mini.texture !== tex) {
+            mini.texture = tex;
+          }
+
+          mini.position.set(wxToMx(sp.position.x), wyToMy(sp.position.y));
+          mini.scale.set(sp.scale.x * s, sp.scale.y * s);
+          mini.rotation = sp.rotation;
+          mini.alpha = selected.has(id) ? 1 : 0.92;
         }
-        mm.content.fill();
+
+        // Remove minimap sprites for deleted objects
+        for (const [id, mini] of mm.spriteById.entries()) {
+          if (seen.has(id)) continue;
+          mini.destroy({ children: false });
+          mm.spriteById.delete(id);
+        }
+
+        // Optional overlay for selection outlines (helps when thumbnails are similar)
+        mm.overlay.clear();
+        if (selected.size > 0) {
+          mm.overlay.lineStyle(2, 0xfbbf24, 0.95);
+          for (const id of selected) {
+            const sp = spritesByObjectIdRef.current.get(id);
+            if (!sp) continue;
+            const tex = sp.texture;
+            const w = tex?.orig?.width ?? 0;
+            const h = tex?.orig?.height ?? 0;
+            if (w <= 0 || h <= 0) continue;
+            const bw = w * sp.scale.x * s;
+            const bh = h * sp.scale.y * s;
+            const cx = wxToMx(sp.position.x);
+            const cy = wyToMy(sp.position.y);
+            mm.overlay.drawRect(cx - bw / 2, cy - bh / 2, bw, bh);
+          }
+        }
 
         // Draw viewport rectangle (visible world region)
         mm.viewport.clear();
-        const topLeftWorld = world.toLocal(new PIXI.Point(0, 0));
-        const bottomRightWorld = world.toLocal(
-          new PIXI.Point(app.renderer.width, app.renderer.height)
-        );
         const vx0 = wxToMx(topLeftWorld.x);
         const vy0 = wyToMy(topLeftWorld.y);
         const vx1 = wxToMx(bottomRightWorld.x);
         const vy1 = wyToMy(bottomRightWorld.y);
-        const vw = vx1 - vx0;
-        const vh = vy1 - vy0;
-        mm.viewport.rect(vx0, vy0, vw, vh);
-        mm.viewport.stroke({ color: 0x60a5fa, width: 2, alpha: 0.95 });
+        const rx = Math.min(vx0, vx1);
+        const ry = Math.min(vy0, vy1);
+        const rw = Math.abs(vx1 - vx0);
+        const rh = Math.abs(vy1 - vy0);
+        // High-contrast viewport indicator (blue border)
+        mm.viewport.lineStyle(3, 0x38bdf8, 1);
+        mm.viewport.drawRect(rx, ry, rw, rh);
       };
 
       app.ticker.add(() => {
         updateSelectionOverlay();
+        updateMultiSelection();
         updateMinimap();
       });
 
@@ -601,7 +781,7 @@ export function PixiWorkspace(props: {
       // Center the object in view.
       world.position.x = app.renderer.width / 2 - p.x * world.scale.x;
       world.position.y = app.renderer.height / 2 - p.y * world.scale.y;
-      setSelectedObjectId(objectId);
+      setSelectedIds([objectId]);
       scheduleViewSave({
         world_x: world.position.x,
         world_y: world.position.y,

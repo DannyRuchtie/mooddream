@@ -99,3 +99,10 @@ infer query /path/to/image.png "What is happening?"
 ```
 
 Use whichever workflow fits your needs—everything ultimately hits the same local REST service.
+
+
+## Todo
+[] aqua effect
+[] connect with moondream
+[] vector database
+[] double click to see full screen preview with meta data on the right
