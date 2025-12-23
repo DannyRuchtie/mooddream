@@ -13,9 +13,6 @@ High‑performance, Figma‑like canvas for building layouts by dropping images 
 
 <table>
   <tr>
-    <td><img src="screen-2.jpg" alt="Workspace canvas (alternate)" width="420" /></td>
-  </tr>
-  <tr>
     <td><img src="screen-4.jpg" alt="Workspace selection and transforms" width="420" /></td>
     <td><img src="screen-5.jpg" alt="Asset command palette search" width="420" /></td>
   </tr>
