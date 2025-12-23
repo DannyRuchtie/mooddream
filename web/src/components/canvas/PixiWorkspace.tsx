@@ -6,6 +6,20 @@ import * as PIXI from "pixi.js";
 import type { AssetWithAi, CanvasObjectRow } from "@/server/db/types";
 import { AssetLightbox } from "@/components/lightbox/AssetLightbox";
 
+type RippleUniformValues = {
+  uTime: number;
+  uCenter: PIXI.Point;
+  uAmplitude: number;
+  uFrequency: number;
+  uSpeed: number;
+  uWidth: number;
+  uDecay: number;
+  uAspect: number;
+  uDuration: number;
+};
+
+type RippleUniformGroup = PIXI.UniformGroup & { uniforms: RippleUniformValues };
+
 // Theme color used for the *viewport region* indicator inside the minimap.
 // Keep this aligned with the app's visual language (matches the existing selection blue).
 const THEME_ACCENT = 0x60a5fa; // blue-400
@@ -199,6 +213,7 @@ export function PixiWorkspace(props: {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<PIXI.Application | null>(null);
   const worldRef = useRef<PIXI.Container | null>(null);
+  const worldRootRef = useRef<PIXI.Container | null>(null);
   const spritesByObjectIdRef = useRef<Map<string, PIXI.Sprite>>(new Map());
   const shadowsByObjectIdRef = useRef<Map<string, PIXI.Graphics>>(new Map());
   const textureCacheRef = useRef<Map<string, PIXI.Texture>>(new Map());
@@ -207,6 +222,13 @@ export function PixiWorkspace(props: {
   const highlightOverlayByObjectIdRef = useRef<Map<string, PIXI.Container>>(new Map());
   const shadowLiftByObjectIdRef = useRef<Map<string, { current: number; target: number }>>(new Map());
   const animatingShadowIdsRef = useRef<Set<string>>(new Set());
+  const rippleRef = useRef<{
+    filter: PIXI.Filter;
+    uniforms: RippleUniformGroup;
+    active: boolean;
+    timeSec: number;
+  } | null>(null);
+  const lastRippleCenter01Ref = useRef<PIXI.Point>(new PIXI.Point(0.5, 0.5));
   const previewRef = useRef<{
     rt: PIXI.RenderTexture;
     root: PIXI.Container;
@@ -255,6 +277,32 @@ export function PixiWorkspace(props: {
     width: number;
     height: number;
   } | null>(null);
+
+  const triggerRippleAtRendererPoint = (rx: number, ry: number) => {
+    const app = appRef.current;
+    const worldRoot = worldRootRef.current;
+    const ripple = rippleRef.current;
+    if (!app || !worldRoot || !ripple) return;
+
+    const w = Math.max(1, app.renderer.width);
+    const h = Math.max(1, app.renderer.height);
+    const x01 = clamp(rx / w, 0, 1);
+    const y01 = clamp(ry / h, 0, 1);
+
+    lastRippleCenter01Ref.current.set(x01, y01);
+
+    ripple.active = true;
+    ripple.timeSec = 0;
+    ripple.uniforms.uniforms.uTime = 0;
+    ripple.uniforms.uniforms.uCenter.set(x01, y01);
+    ripple.uniforms.uniforms.uAspect = w / h;
+
+    if (!worldRoot.filters || worldRoot.filters.length === 0) {
+      worldRoot.filters = [ripple.filter];
+    } else if (!worldRoot.filters.includes(ripple.filter)) {
+      worldRoot.filters = [ripple.filter, ...worldRoot.filters];
+    }
+  };
 
   const objectsRef = useRef<CanvasObjectRow[]>(props.initialObjects);
   useEffect(() => {
@@ -585,6 +633,30 @@ export function PixiWorkspace(props: {
           el.tagName === "TEXTAREA" ||
           (el as any).isContentEditable);
 
+      // Trigger ripple for testing with "r".
+      if (!isTyping && (e.key === "r" || e.key === "R")) {
+        const app = appRef.current;
+        const world = worldRef.current;
+        if (!app) return;
+        e.preventDefault();
+
+        // Prefer triggering from the currently selected image (if exactly one is selected).
+        const selectedId = selectedIdsRef.current.length === 1 ? selectedIdsRef.current[0] : null;
+        if (selectedId && world) {
+          const sp = spritesByObjectIdRef.current.get(selectedId);
+          if (sp) {
+            const p = sp.getGlobalPosition(new PIXI.Point());
+            triggerRippleAtRendererPoint(p.x, p.y);
+            return;
+          }
+        }
+
+        // Fallback: use the last ripple origin (defaults to center if none).
+        const c01 = lastRippleCenter01Ref.current;
+        triggerRippleAtRendererPoint(c01.x * app.renderer.width, c01.y * app.renderer.height);
+        return;
+      }
+
       // Reset zoom to 10% with "0".
       if (!isTyping && (e.key === "0" || e.code === "Digit0" || e.code === "Numpad0")) {
         const app = appRef.current;
@@ -695,10 +767,152 @@ export function PixiWorkspace(props: {
       });
       host.appendChild(app.canvas);
 
+      // Root container for the world. This stays in screen-space so we can apply screen-space
+      // filters (like ripple) without having filter bounds explode due to panning/zooming.
+      const worldRoot = new PIXI.Container();
+      worldRootRef.current = worldRoot;
+      // Constrain filter work to the visible viewport (renderer/screen space).
+      worldRoot.filterArea = app.screen;
+      app.stage.addChild(worldRoot);
+
       const world = new PIXI.Container();
       world.sortableChildren = true;
       worldRef.current = world;
-      app.stage.addChild(world);
+      worldRoot.addChild(world);
+
+      // WebGL ripple filter (triggered on drop + "r" shortcut).
+      // Note: We only provide the WebGL program. If Pixi ever runs via WebGPU here, this effect will be skipped.
+      const rippleVertex = `in vec2 aPosition;
+out vec2 vTextureCoord;
+
+uniform vec4 uInputSize;
+uniform vec4 uOutputFrame;
+uniform vec4 uOutputTexture;
+
+vec4 filterVertexPosition( void )
+{
+    vec2 position = aPosition * uOutputFrame.zw + uOutputFrame.xy;
+
+    position.x = position.x * (2.0 / uOutputTexture.x) - 1.0;
+    position.y = position.y * (2.0*uOutputTexture.z / uOutputTexture.y) - uOutputTexture.z;
+
+    return vec4(position, 0.0, 1.0);
+}
+
+vec2 filterTextureCoord( void )
+{
+    return aPosition * (uOutputFrame.zw * uInputSize.zw);
+}
+
+void main(void)
+{
+    gl_Position = filterVertexPosition();
+    vTextureCoord = filterTextureCoord();
+}`;
+
+      const rippleFragment = `
+in vec2 vTextureCoord;
+out vec4 finalColor;
+
+uniform sampler2D uTexture;
+
+uniform float uTime;
+uniform vec2 uCenter;     // 0..1 within filterArea (screen-space)
+uniform float uAmplitude; // UV offset scale
+uniform float uFrequency; // wave frequency
+uniform float uSpeed;     // ring expansion speed (in UV/sec)
+uniform float uWidth;     // ring thickness (in UV)
+uniform float uDecay;     // spatial decay
+uniform float uAspect;    // width/height
+uniform float uDuration;  // seconds
+
+float heightAt(float dist, float radius, float w, float timeFade, float distFade)
+{
+    float x = dist - radius;
+
+    // Front band: a smooth "impact ring".
+    float frontBand = exp(-(x * x) / (w * w));
+
+    // Behind band: trailing ripples that decay behind the front.
+    float behindBand = step(x, 0.0) * exp(x / (w * 2.0));
+
+    // Ahead of the front, fade out quickly.
+    float aheadFade = smoothstep(w * 3.0, 0.0, x);
+
+    float band = (0.25 * frontBand + 0.75 * behindBand) * aheadFade;
+
+    // Two harmonics reads as "watery" vs a single sine.
+    float phase = x * uFrequency;
+    float wave = sin(phase) + 0.35 * sin(phase * 2.15 + 1.3);
+
+    return wave * band * timeFade * distFade;
+}
+
+void main()
+{
+    vec2 uv = vTextureCoord;
+    vec2 p = uv - uCenter;
+    // Aspect-correct to keep the ripple circular in screen-space.
+    p.x *= uAspect;
+    float dist = length(p);
+
+    float timeFade = clamp(1.0 - (uTime / max(uDuration, 0.001)), 0.0, 1.0);
+    float distFade = exp(-uDecay * dist);
+
+    float radius = uTime * uSpeed;
+    float w = max(uWidth, 0.0005);
+
+    // Radial direction in UV space (undo aspect correction).
+    vec2 dir = dist > 0.00001 ? normalize(p) : vec2(0.0, 0.0);
+    dir.x /= max(uAspect, 0.00001);
+
+    // Finite-difference slope -> "refraction normal" feel.
+    float eps = 0.0025;
+    float h0 = heightAt(dist, radius, w, timeFade, distFade);
+    float h1 = heightAt(dist + eps, radius, w, timeFade, distFade);
+    float h2 = heightAt(max(0.0, dist - eps), radius, w, timeFade, distFade);
+    float dh = (h1 - h2) / (2.0 * eps);
+
+    // Refraction: use slope + a tiny rotational component.
+    vec2 perp = vec2(-dir.y, dir.x);
+    vec2 disp = (dir * dh + perp * (h0 * 0.35)) * uAmplitude;
+
+    vec2 uv2 = uv + disp;
+    uv2 = clamp(uv2, vec2(0.0), vec2(1.0));
+
+    finalColor = texture(uTexture, uv2);
+}`;
+
+      const rippleUniforms = new PIXI.UniformGroup({
+        uTime: { value: 0, type: "f32" },
+        uCenter: { value: new PIXI.Point(0.5, 0.5), type: "vec2<f32>" },
+        uAmplitude: { value: 0.020, type: "f32" },
+        uFrequency: { value: 62.0, type: "f32" },
+        uSpeed: { value: 0.65, type: "f32" },
+        uWidth: { value: 0.11, type: "f32" },
+        uDecay: { value: 1.7, type: "f32" },
+        uAspect: { value: 1.0, type: "f32" },
+        uDuration: { value: 1.25, type: "f32" },
+      }) as unknown as RippleUniformGroup;
+
+      const rippleFilter = new PIXI.Filter({
+        glProgram: PIXI.GlProgram.from({
+          vertex: rippleVertex,
+          fragment: rippleFragment,
+          name: "workspace-ripple-filter",
+        }),
+        resources: {
+          rippleUniforms,
+        },
+        padding: 0,
+      });
+
+      rippleRef.current = {
+        filter: rippleFilter,
+        uniforms: rippleUniforms,
+        active: false,
+        timeSec: 0,
+      };
 
       // Offscreen preview renderer state (used for project thumbnails)
       const previewRoot = new PIXI.Container();
@@ -1425,7 +1639,29 @@ export function PixiWorkspace(props: {
         }
       };
 
-      app.ticker.add(() => {
+      app.ticker.add((ticker) => {
+        // Drive ripple shader if active.
+        const ripple = rippleRef.current;
+        if (ripple && ripple.active) {
+          ripple.timeSec += (ticker.deltaMS ?? 16.6667) / 1000;
+          ripple.uniforms.uniforms.uTime = ripple.timeSec;
+          ripple.uniforms.uniforms.uAspect =
+            app.renderer.width / Math.max(1, app.renderer.height);
+
+          const duration = Number(ripple.uniforms.uniforms.uDuration) || 1.0;
+          if (ripple.timeSec >= duration) {
+            ripple.active = false;
+            ripple.timeSec = 0;
+            // Remove the filter when inactive to preserve existing performance.
+            if (worldRoot.filters && worldRoot.filters.includes(ripple.filter)) {
+              worldRoot.filters = worldRoot.filters.filter((f) => f !== ripple.filter);
+            }
+            if (worldRoot.filters && worldRoot.filters.length === 0) {
+              worldRoot.filters = [];
+            }
+          }
+        }
+
         // Subtle shadow lift animation (card feels "alive" but not distracting).
         const animIds = animatingShadowIdsRef.current;
         if (animIds.size) {
@@ -1657,6 +1893,9 @@ export function PixiWorkspace(props: {
     const rx = ((e.clientX - rect.left) * app.renderer.width) / rect.width;
     const ry = ((e.clientY - rect.top) * app.renderer.height) / rect.height;
     const worldPoint = world.toLocal(new PIXI.Point(rx, ry));
+
+    // Visual feedback: ripple starts at the drop location.
+    triggerRippleAtRendererPoint(rx, ry);
 
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);

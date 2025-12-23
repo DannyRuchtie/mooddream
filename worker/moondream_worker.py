@@ -454,6 +454,167 @@ def _tokenize_candidates(text: str) -> List[str]:
     return out
 
 
+def _parse_object_candidates_from_query_text(text: str) -> List[str]:
+    """
+    Turn a /query response into a list of object candidate strings.
+    Supports:
+    - JSON array: ["cat","sofa",...]
+    - Comma/newline separated: "cat, sofa, coffee table"
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    # First: try JSON array.
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            out: List[str] = []
+            for v in parsed:
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+            return out
+    except Exception:
+        pass
+
+    # Otherwise: split by common separators.
+    parts: List[str] = []
+    for sep in ("\n", ",", ";"):
+        if sep in raw:
+            parts = [p.strip() for p in raw.replace("\r", "\n").split(sep)]
+            break
+    if not parts:
+        parts = [raw]
+
+    out2: List[str] = []
+    for p in parts:
+        if not p:
+            continue
+        # Remove bullet prefix.
+        p2 = p.lstrip("-•*").strip()
+        if not p2:
+            continue
+        out2.append(p2)
+    return out2
+
+
+def _normalize_tag_candidate(s: str) -> str:
+    # Lowercase, keep letters/numbers/spaces, collapse whitespace.
+    t = (s or "").strip().lower()
+    if not t:
+        return ""
+    t = t.replace("_", " ").replace("-", " ")
+    buf: List[str] = []
+    for ch in t:
+        if ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch == " ":
+            buf.append(ch)
+        else:
+            buf.append(" ")
+    t = " ".join("".join(buf).split())
+    # Strip leading articles.
+    for art in ("a ", "an ", "the "):
+        if t.startswith(art):
+            t = t[len(art) :].strip()
+            break
+    words = t.split()
+    if not words:
+        return ""
+
+    # Heuristic: strip common non-object modifiers so tags are more "noun-like".
+    # (Moondream /query often returns adjective+noun; for tags we prefer the noun.)
+    modifiers = {
+        # articles/structure
+        "a",
+        "an",
+        "the",
+        "of",
+        "and",
+        "with",
+        "without",
+        "in",
+        "on",
+        "at",
+        # colors
+        "white",
+        "black",
+        "red",
+        "green",
+        "blue",
+        "yellow",
+        "orange",
+        "purple",
+        "pink",
+        "brown",
+        "gray",
+        "grey",
+        "gold",
+        "silver",
+        # positions/shapes/common modifiers
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "center",
+        "central",
+        "upper",
+        "lower",
+        "front",
+        "back",
+        "circular",
+        "round",
+        "square",
+        "rectangular",
+        "evenly",
+        "even",
+        "large",
+        "small",
+        "big",
+        "tiny",
+        "smooth",
+        "shiny",
+        # number words
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "first",
+        "second",
+        "third",
+    }
+
+    # Prefer keeping noun phrases (e.g. "coffee table"), but drop leading modifiers.
+    pruned = [w for w in words if w and w not in modifiers and not w.isdigit()]
+    if pruned:
+        words = pruned
+
+    # Keep short phrases (detect supports phrases reasonably well).
+    if len(words) > 3:
+        words = words[:3]
+    t = " ".join(words).strip()
+    if len(t) < 2:
+        return ""
+    return t
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for it in items:
+        if not it:
+            continue
+        if it in seen:
+            continue
+        seen.add(it)
+        out.append(it)
+    return out
+
+
 def _extract_detect_boxes(detect_response: Any) -> List[Dict[str, Any]]:
     """
     Normalize Moondream detect responses into a list of boxes.
@@ -463,6 +624,7 @@ def _extract_detect_boxes(detect_response: Any) -> List[Dict[str, Any]]:
         return []
     data = detect_response
     # Common shapes we attempt:
+    # - Moondream API: { "objects": [ {x_min,y_min,x_max,y_max} ] }
     # - { "objects": [ {x,y,w,h,score?} ] }
     # - { "detections": [ {box:{x,y,w,h}, score} ] }
     # - { "boxes": [ [x1,y1,x2,y2], ... ] }
@@ -478,6 +640,29 @@ def _extract_detect_boxes(detect_response: Any) -> List[Dict[str, Any]]:
     if isinstance(data, list):
         for item in data:
             if isinstance(item, dict):
+                # Moondream-style min/max coords (normalized 0..1)
+                if all(k in item for k in ("x_min", "y_min", "x_max", "y_max")):
+                    try:
+                        x_min = float(item.get("x_min"))
+                        y_min = float(item.get("y_min"))
+                        x_max = float(item.get("x_max"))
+                        y_max = float(item.get("y_max"))
+                        boxes.append(
+                            {
+                                "x": x_min,
+                                "y": y_min,
+                                "w": x_max - x_min,
+                                "h": y_max - y_min,
+                                "x_min": x_min,
+                                "y_min": y_min,
+                                "x_max": x_max,
+                                "y_max": y_max,
+                                "score": item.get("score"),
+                            }
+                        )
+                    except Exception:
+                        pass
+                    continue
                 if all(k in item for k in ("x", "y", "w", "h")):
                     boxes.append(
                         {
@@ -521,6 +706,20 @@ def _extract_segment_svg(segment_response: Any) -> Optional[str]:
     if isinstance(segment_response, str):
         return segment_response.strip() or None
     if isinstance(segment_response, dict):
+        # Moondream API returns "path" (SVG path 'd') + bbox; wrap to a real SVG.
+        # Docs: https://docs.moondream.ai/api
+        def wrap_path_to_svg(path: str) -> Optional[str]:
+            p = (path or "").strip()
+            if not p:
+                return None
+            # Be safe around quotes.
+            p = p.replace('"', "'")
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" preserveAspectRatio="none">'
+                f'<path d="{p}" fill="white" />'
+                "</svg>"
+            )
+
         for key in ("svg", "mask_svg", "result", "output"):
             val = segment_response.get(key)
             if isinstance(val, str) and val.strip().startswith("<svg"):
@@ -530,6 +729,36 @@ def _extract_segment_svg(segment_response: Any) -> Optional[str]:
             r = segment_response["result"]
             if isinstance(r.get("svg"), str) and r["svg"].strip().startswith("<svg"):
                 return r["svg"].strip()
+            if isinstance(r.get("path"), str):
+                return wrap_path_to_svg(r.get("path"))
+        if isinstance(segment_response.get("path"), str):
+            return wrap_path_to_svg(segment_response.get("path"))
+    return None
+
+
+def _extract_segment_bbox(segment_response: Any) -> Optional[Dict[str, Any]]:
+    """
+    Moondream segment returns: { path: "...", bbox: {x_min,y_min,x_max,y_max} }
+    We return bbox as a dict when present (tolerant to nesting).
+    """
+    if not segment_response:
+        return None
+    data = segment_response
+    if isinstance(data, dict) and isinstance(data.get("result"), dict):
+        data = data["result"]
+    if not isinstance(data, dict):
+        return None
+    bbox = data.get("bbox")
+    if isinstance(bbox, dict) and all(k in bbox for k in ("x_min", "y_min", "x_max", "y_max")):
+        try:
+            return {
+                "x_min": float(bbox.get("x_min")),
+                "y_min": float(bbox.get("y_min")),
+                "x_max": float(bbox.get("x_max")),
+                "y_max": float(bbox.get("y_max")),
+            }
+        except Exception:
+            return None
     return None
 
 
@@ -758,7 +987,34 @@ def main() -> int:
 
                 # Candidate tags are filtered by detect; we only store detect-confirmed tags.
                 max_tags = int(os.getenv("MOONDREAM_SEGMENT_TOP_N", "8"))
-                candidates = _tokenize_candidates(caption)
+                tags_mode = (os.getenv("MOONDREAM_TAGS_MODE", "hybrid") or "hybrid").lower()
+
+                candidates: List[str] = []
+                if tags_mode in ("query", "hybrid"):
+                    try:
+                        # Ask for object nouns; we still confirm each with /detect.
+                        q = (
+                            f"List up to {max_tags * 2} distinct objects visible in this image. "
+                            "Respond with ONLY a JSON array. Each item should be a short noun or noun phrase "
+                            "(1-2 words), lowercase, with no colors, counts, or adjectives. "
+                            'Example: ["person","dog","coffee table"].'
+                        )
+                        resp = provider.query(image_ref, q)
+                        candidates.extend(_parse_object_candidates_from_query_text(resp))
+                    except Exception:
+                        pass
+
+                # Caption fallback (keeps existing behavior and helps when /query fails).
+                if tags_mode in ("caption", "hybrid"):
+                    cap_cands = _tokenize_candidates(caption)
+                    # If /query yielded nothing, use caption candidates; otherwise only use caption
+                    # candidates to fill remaining slots.
+                    if not candidates:
+                        candidates.extend(cap_cands)
+                    else:
+                        candidates.extend([c for c in cap_cands if c not in candidates])
+
+                candidates = _dedupe_preserve_order([_normalize_tag_candidate(c) for c in candidates])
 
                 kept_tags: List[str] = []
                 bbox_by_tag: Dict[str, Any] = {}
@@ -783,10 +1039,24 @@ def main() -> int:
 
                 # Segment the kept tags (best-effort).
                 segments: Dict[str, Optional[str]] = {}
+                segment_supported = True
                 for tag in kept_tags:
                     try:
+                        if not segment_supported:
+                            segments[tag] = None
+                            continue
                         seg_resp = provider.segment(image_ref, tag)
                         segments[tag] = _extract_segment_svg(seg_resp)
+                        seg_bbox = _extract_segment_bbox(seg_resp)
+                        if seg_bbox is not None:
+                            # Attach segment bbox so the UI can still highlight even if SVG is missing.
+                            if tag in bbox_by_tag and isinstance(bbox_by_tag[tag], dict):
+                                bbox_by_tag[tag]["segment_bbox"] = seg_bbox
+                    except ProviderError as exc:
+                        msg = str(exc).lower()
+                        if "not available" in msg or "not supported" in msg:
+                            segment_supported = False
+                        segments[tag] = None
                     except Exception:
                         segments[tag] = None
 
