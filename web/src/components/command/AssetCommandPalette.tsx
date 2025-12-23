@@ -48,7 +48,9 @@ export function AssetCommandPalette(props: {
     if (!open) return;
     const t = window.setTimeout(async () => {
       const res = await fetch(
-        `/api/projects/${props.projectId}/assets/search?q=${encodeURIComponent(search)}&limit=50`
+        `/api/projects/${props.projectId}/assets/search?q=${encodeURIComponent(
+          search
+        )}&limit=50&mode=hybrid`
       );
       if (!res.ok) return;
       const data = (await res.json()) as { assets: AssetWithAi[] };
