@@ -1,25 +1,57 @@
-# Moondream Invite Canvas
+## Moondream Invite Canvas
 
-High‑performance, Figma‑like canvas for building “invite” layouts by dropping images onto an infinite board, moving/resizing them, and saving everything locally.
+High‑performance, Figma‑like canvas for building layouts by dropping images onto an infinite board, arranging them with fast transforms (move/resize/rotate), and keeping everything **local‑first**.
 
 - **Frontend**: Next.js + PixiJS (WebGL)
 - **DB**: SQLite (with FTS5 search)
 - **Storage**: local filesystem under `data/`
-- **AI**: Moondream Station (local) or Hugging Face endpoint (optional worker)
+- **AI (optional)**: Moondream Station (local) or Hugging Face endpoint (worker)
 
-![Moondream Invite Canvas screenshot](docs/screenshot.png)
+![Moondream Invite Canvas — workspace](screen-1.jpg)
 
-## Introduction
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="screen-1.jpg" alt="Workspace canvas" width="420" /></td>
+    <td><img src="screen-2.jpg" alt="Workspace canvas (alternate)" width="420" /></td>
+  </tr>
+  <tr>
+    <td><img src="screen-4.jpg" alt="Workspace selection and transforms" width="420" /></td>
+    <td><img src="screen-5.jpg" alt="Asset command palette search" width="420" /></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="screen-3.jpg" alt="Asset lightbox with AI caption/tags and segments" width="860" /></td>
+  </tr>
+</table>
+
+## What this is
 
 This repo is an MVP for a fast, responsive design surface:
 
 - Drop images onto the canvas (drag & drop)
-- Pan/zoom with a minimap
+- Pan/zoom an infinite board (with a minimap)
 - Select / multi‑select, move, resize, delete
 - Persist canvas layout and viewport per project
 - Store assets + thumbnails on disk
 - Search assets (filename + AI caption/tags)
 - Optional background worker to caption/tag images via Moondream
+
+## Core concepts (how the app thinks)
+
+- **Project**: A workspace (and a folder on disk) that contains assets + a saved canvas layout.
+- **Asset**: An imported image stored on disk with metadata in SQLite (name, size, dimensions, thumbnails).
+- **Canvas object**: A placed instance of an asset with transform state (x/y/scale/rotation/z-index) persisted to the DB.
+- **Viewport**: The current pan/zoom; persisted per project so you reopen exactly where you left off.
+- **Search**: SQLite FTS5 over filename + AI caption/tags so you can find “dog”, “desert”, etc., not just `IMG_1234`.
+- **AI enrichment (optional)**: A background worker fills in `asset_ai.caption`, `asset_ai.tags_json`, and (optionally) embeddings + segmentation rows.
+
+## How it works (high level)
+
+1. You import an image → it’s copied under `data/projects/{projectId}/...` and indexed in SQLite.
+2. You place it on the canvas → a `canvas_objects` row stores transform + z-index so the layout is durable.
+3. You search → SQLite FTS returns assets using filename and (optionally) AI metadata.
+4. Optionally, the worker enriches assets → captions/tags (and optional embeddings/segments) are written back to SQLite.
 
 ## Quickstart (run the app)
 

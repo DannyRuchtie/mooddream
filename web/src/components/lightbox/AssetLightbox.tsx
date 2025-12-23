@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AssetWithAi } from "@/server/db/types";
 
@@ -32,6 +32,25 @@ function safeParseTagsJson(tagsJson: string | null): string[] {
   }
 }
 
+function parseBoxesFromBboxJson(bboxJson: string | null) {
+  if (!bboxJson) return [] as Array<{ x: number; y: number; w: number; h: number }>;
+  try {
+    const parsed = JSON.parse(bboxJson) as any;
+    const boxes = parsed?.boxes;
+    if (!Array.isArray(boxes)) return [];
+    return boxes
+      .map((b: any) => ({
+        x: Number(b?.x ?? 0),
+        y: Number(b?.y ?? 0),
+        w: Number(b?.w ?? 0),
+        h: Number(b?.h ?? 0),
+      }))
+      .filter((b) => Number.isFinite(b.x) && Number.isFinite(b.y) && b.w > 0 && b.h > 0);
+  } catch {
+    return [];
+  }
+}
+
 export function AssetLightbox(props: {
   projectId: string;
   asset: AssetWithAi;
@@ -42,11 +61,27 @@ export function AssetLightbox(props: {
   const [entered, setEntered] = useState(false);
   const [animating, setAnimating] = useState<boolean>(!!props.originRect);
   const [segments, setSegments] = useState<Segment[] | null>(null);
+  const [selectedSegmentTag, setSelectedSegmentTag] = useState<string | null>(null);
   const [targetRect, setTargetRect] = useState<OriginRect | null>(null);
   const [ghostStyle, setGhostStyle] = useState<React.CSSProperties | null>(null);
   const [ghostTransform, setGhostTransform] = useState<string>("translate(0px,0px) scale(1,1)");
 
   const tags = useMemo(() => safeParseTagsJson(asset.ai_tags_json), [asset.ai_tags_json]);
+
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [imageFit, setImageFit] = useState<{
+    // Pixel rect of the drawn image inside the <img> element box (object-fit: contain)
+    offsetX: number;
+    offsetY: number;
+    drawW: number;
+    drawH: number;
+    scale: number;
+  } | null>(null);
+
+  const selectedSegment = useMemo(() => {
+    if (!selectedSegmentTag) return null;
+    return segments?.find((s) => s.tag === selectedSegmentTag) ?? null;
+  }, [segments, selectedSegmentTag]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setEntered(true), 0);
@@ -64,6 +99,7 @@ export function AssetLightbox(props: {
   useEffect(() => {
     let cancelled = false;
     setSegments(null);
+    setSelectedSegmentTag(null);
     fetch(`/api/projects/${projectId}/assets/${asset.id}/segments`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -79,6 +115,42 @@ export function AssetLightbox(props: {
       cancelled = true;
     };
   }, [asset.id, projectId]);
+
+  const recomputeImageFit = useCallback(() => {
+    const img = imgRef.current;
+    if (!img) return;
+
+    const cw = img.clientWidth;
+    const ch = img.clientHeight;
+    const nw = img.naturalWidth || asset.width || 0;
+    const nh = img.naturalHeight || asset.height || 0;
+    if (!(cw > 2 && ch > 2 && nw > 2 && nh > 2)) {
+      setImageFit(null);
+      return;
+    }
+
+    const s = Math.min(cw / nw, ch / nh);
+    const drawW = nw * s;
+    const drawH = nh * s;
+    const offsetX = (cw - drawW) / 2;
+    const offsetY = (ch - drawH) / 2;
+    setImageFit({ offsetX, offsetY, drawW, drawH, scale: s });
+  }, [asset.height, asset.width]);
+
+  useEffect(() => {
+    recomputeImageFit();
+    const onResize = () => recomputeImageFit();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [recomputeImageFit]);
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const ro = new ResizeObserver(() => recomputeImageFit());
+    ro.observe(img);
+    return () => ro.disconnect();
+  }, [recomputeImageFit]);
 
   // FLIP animation: animate from the clicked image rect -> final image container rect using CSS transitions.
   useEffect(() => {
@@ -182,11 +254,68 @@ export function AssetLightbox(props: {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               data-asset-lightbox-target="true"
+              ref={imgRef}
               src={asset.storage_url}
               alt={asset.original_name || "asset"}
               className={"h-full w-full object-contain " + (animating ? "opacity-0" : "opacity-100")}
               draggable={false}
+              onLoad={() => recomputeImageFit()}
             />
+
+            {/* Segment overlay (SVG preferred, bbox fallback) */}
+            {!animating && selectedSegment && imageFit ? (
+              <div className="pointer-events-none absolute inset-0">
+                {selectedSegment.svg && selectedSegment.svg.trim().startsWith("<svg") ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    alt=""
+                    draggable={false}
+                    src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+                      selectedSegment.svg
+                    )}`}
+                    style={{
+                      position: "absolute",
+                      left: imageFit.offsetX,
+                      top: imageFit.offsetY,
+                      width: imageFit.drawW,
+                      height: imageFit.drawH,
+                      opacity: 0.22,
+                      mixBlendMode: "screen",
+                      filter: "drop-shadow(0px 0px 10px rgba(124, 58, 237, 0.65))",
+                    }}
+                  />
+                ) : null}
+
+                {parseBoxesFromBboxJson(selectedSegment.bboxJson).map((b, idx) => {
+                  const normalized =
+                    b.x >= 0 &&
+                    b.y >= 0 &&
+                    b.x <= 1.5 &&
+                    b.y <= 1.5 &&
+                    b.w > 0 &&
+                    b.h > 0 &&
+                    b.w <= 1.5 &&
+                    b.h <= 1.5;
+                  const xPx = normalized ? b.x * imageFit.drawW : b.x * imageFit.scale;
+                  const yPx = normalized ? b.y * imageFit.drawH : b.y * imageFit.scale;
+                  const wPx = normalized ? b.w * imageFit.drawW : b.w * imageFit.scale;
+                  const hPx = normalized ? b.h * imageFit.drawH : b.h * imageFit.scale;
+                  return (
+                    <div
+                      key={`${selectedSegment.tag}-${idx}`}
+                      style={{
+                        position: "absolute",
+                        left: imageFit.offsetX + xPx,
+                        top: imageFit.offsetY + yPx,
+                        width: wPx,
+                        height: hPx,
+                      }}
+                      className="rounded-sm border-2 border-violet-400/90 bg-violet-500/10 shadow-[0_0_18px_rgba(124,58,237,0.55)]"
+                    />
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -238,17 +367,47 @@ export function AssetLightbox(props: {
                   {segments === null ? (
                     <div className="text-xs text-zinc-500">Loading…</div>
                   ) : segments.length ? (
-                    <div className="flex flex-wrap gap-2">
-                      {segments.slice(0, 80).map((s) => (
-                        <div
-                          key={s.tag}
-                          className="rounded-full border border-white/10 bg-black/20 px-2 py-1 text-xs text-zinc-200"
-                          title={s.updatedAt}
-                        >
-                          {s.tag}
+                    <>
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-xs text-zinc-500">
+                          Click a tag to highlight it on the image.
                         </div>
-                      ))}
-                    </div>
+                        {selectedSegmentTag ? (
+                          <button
+                            onClick={() => setSelectedSegmentTag(null)}
+                            className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/50"
+                          >
+                            Clear
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {segments.slice(0, 80).map((s) => {
+                          const selected = s.tag === selectedSegmentTag;
+                          return (
+                            <button
+                              type="button"
+                              key={s.tag}
+                              onClick={() => setSelectedSegmentTag((cur) => (cur === s.tag ? null : s.tag))}
+                              className={
+                                "rounded-full border px-2 py-1 text-xs " +
+                                (selected
+                                  ? "border-violet-400/60 bg-violet-500/15 text-zinc-100"
+                                  : "border-white/10 bg-black/20 text-zinc-200 hover:bg-black/30")
+                              }
+                              title={s.updatedAt}
+                            >
+                              {s.tag}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedSegmentTag && !selectedSegment?.svg && !parseBoxesFromBboxJson(selectedSegment?.bboxJson ?? null).length ? (
+                        <div className="mt-2 text-xs text-zinc-500">
+                          No overlay data cached for <span className="text-zinc-300">{selectedSegmentTag}</span>.
+                        </div>
+                      ) : null}
+                    </>
                   ) : (
                     <div className="text-xs text-zinc-500">No cached segments.</div>
                   )}

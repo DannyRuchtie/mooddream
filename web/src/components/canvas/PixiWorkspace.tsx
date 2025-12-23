@@ -15,6 +15,8 @@ type RippleUniformValues = {
   uWidth: number;
   uDecay: number;
   uAspect: number;
+  uShapeAspect: number;
+  uShapeRotation: number;
   uDuration: number;
 };
 
@@ -278,7 +280,11 @@ export function PixiWorkspace(props: {
     height: number;
   } | null>(null);
 
-  const triggerRippleAtRendererPoint = (rx: number, ry: number) => {
+  const triggerRippleAtRendererPoint = (
+    rx: number,
+    ry: number,
+    opts?: { shapeAspect?: number; shapeRotation?: number }
+  ) => {
     const app = appRef.current;
     const worldRoot = worldRootRef.current;
     const ripple = rippleRef.current;
@@ -296,6 +302,12 @@ export function PixiWorkspace(props: {
     ripple.uniforms.uniforms.uTime = 0;
     ripple.uniforms.uniforms.uCenter.set(x01, y01);
     ripple.uniforms.uniforms.uAspect = w / h;
+    ripple.uniforms.uniforms.uShapeAspect = clamp(
+      Number(opts?.shapeAspect ?? 1) || 1,
+      0.05,
+      20
+    );
+    ripple.uniforms.uniforms.uShapeRotation = Number(opts?.shapeRotation ?? 0) || 0;
 
     if (!worldRoot.filters || worldRoot.filters.length === 0) {
       worldRoot.filters = [ripple.filter];
@@ -646,14 +658,22 @@ export function PixiWorkspace(props: {
           const sp = spritesByObjectIdRef.current.get(selectedId);
           if (sp) {
             const p = sp.getGlobalPosition(new PIXI.Point());
-            triggerRippleAtRendererPoint(p.x, p.y);
+            const tw = sp.texture?.orig?.width ?? 0;
+            const th = sp.texture?.orig?.height ?? 0;
+            const sx = Math.abs(sp.scale.x) || 1;
+            const sy = Math.abs(sp.scale.y) || 1;
+            const shapeAspect =
+              tw > 0 && th > 0 ? (tw * sx) / Math.max(1e-6, th * sy) : 1;
+            triggerRippleAtRendererPoint(p.x, p.y, {
+              shapeAspect,
+              shapeRotation: sp.rotation,
+            });
             return;
           }
         }
 
         // Fallback: use the last ripple origin (defaults to center if none).
-        const c01 = lastRippleCenter01Ref.current;
-        triggerRippleAtRendererPoint(c01.x * app.renderer.width, c01.y * app.renderer.height);
+        triggerRippleAtRendererPoint(app.renderer.width / 2, app.renderer.height / 2);
         return;
       }
 
@@ -691,6 +711,37 @@ export function PixiWorkspace(props: {
       const ids = selectedIdsRef.current;
       if (!ids || ids.length === 0) return;
       e.preventDefault();
+
+      // Confirmation: only prompt when deleting images from the board.
+      // (Non-image objects like shapes/text delete immediately as before.)
+      const currentObjects = objectsRef.current ?? [];
+      const removeSet = new Set(ids);
+      const selectedImageObjects = currentObjects.filter(
+        (o) => removeSet.has(o.id) && o.type === "image"
+      );
+      if (selectedImageObjects.length > 0) {
+        const removedAssetIds = new Set<string>();
+        for (const o of selectedImageObjects) {
+          if (o.asset_id) removedAssetIds.add(o.asset_id);
+        }
+        const remainingAssetIds = new Set<string>();
+        for (const o of currentObjects) {
+          if (removeSet.has(o.id)) continue;
+          if (o.type !== "image") continue;
+          if (!o.asset_id) continue;
+          remainingAssetIds.add(o.asset_id);
+        }
+        const assetsThatWouldBeDeleted = [...removedAssetIds].filter(
+          (id) => !remainingAssetIds.has(id)
+        );
+
+        const msg =
+          assetsThatWouldBeDeleted.length > 0
+            ? `Delete ${selectedImageObjects.length} image(s) from the board?\n\nThis will also permanently delete ${assetsThatWouldBeDeleted.length} asset(s) from the project because nothing else is using them.`
+            : `Delete ${selectedImageObjects.length} image(s) from the board?`;
+        if (!window.confirm(msg)) return;
+      }
+
       setSelectedIds([]);
       let nextObjects: CanvasObjectRow[] | null = null;
       let assetsToDelete: string[] = [];
@@ -824,6 +875,8 @@ uniform float uSpeed;     // ring expansion speed (in UV/sec)
 uniform float uWidth;     // ring thickness (in UV)
 uniform float uDecay;     // spatial decay
 uniform float uAspect;    // width/height
+uniform float uShapeAspect;   // image aspect (w/h) for elliptical ripples
+uniform float uShapeRotation; // radians (align ellipse to image rotation)
 uniform float uDuration;  // seconds
 
 float heightAt(float dist, float radius, float w, float timeFade, float distFade)
@@ -845,16 +898,28 @@ float heightAt(float dist, float radius, float w, float timeFade, float distFade
     float phase = x * uFrequency;
     float wave = sin(phase) + 0.35 * sin(phase * 2.15 + 1.3);
 
-    return wave * band * timeFade * distFade;
+    // Global gain (keeps the effect subtle even with higher frequency content).
+    return wave * band * timeFade * distFade * 0.35;
 }
 
 void main()
 {
     vec2 uv = vTextureCoord;
-    vec2 p = uv - uCenter;
-    // Aspect-correct to keep the ripple circular in screen-space.
-    p.x *= uAspect;
-    float dist = length(p);
+    vec2 pUv = uv - uCenter;
+    // Convert to screen-corrected space (so circles are circles on screen).
+    vec2 pScreen = pUv;
+    pScreen.x *= uAspect;
+
+    // Rotate into the image-aligned frame.
+    float cs = cos(uShapeRotation);
+    float sn = sin(uShapeRotation);
+    mat2 rot = mat2(cs, -sn, sn, cs);
+    vec2 pr = rot * pScreen;
+
+    // Elliptical metric based on the image aspect ratio (w/h).
+    float sAspect = max(uShapeAspect, 0.0001);
+    vec2 pm = vec2(pr.x / sAspect, pr.y);
+    float dist = length(pm);
 
     float timeFade = clamp(1.0 - (uTime / max(uDuration, 0.001)), 0.0, 1.0);
     float distFade = exp(-uDecay * dist);
@@ -862,20 +927,29 @@ void main()
     float radius = uTime * uSpeed;
     float w = max(uWidth, 0.0005);
 
-    // Radial direction in UV space (undo aspect correction).
-    vec2 dir = dist > 0.00001 ? normalize(p) : vec2(0.0, 0.0);
+    // Radial direction in UV space for an ellipse:
+    // - compute direction in metric space (pm), then map back to UV.
+    vec2 dm = dist > 0.00001 ? (pm / dist) : vec2(0.0, 0.0);
+    vec2 dr = vec2(dm.x * sAspect, dm.y); // undo metric scaling (back to rotated screen space)
+    mat2 rotInv = mat2(cs, sn, -sn, cs);
+    vec2 dScreen = rotInv * dr;
+    vec2 dir = dScreen;
     dir.x /= max(uAspect, 0.00001);
+    float dirLen = length(dir);
+    dir = dirLen > 0.00001 ? (dir / dirLen) : vec2(0.0, 0.0);
 
     // Finite-difference slope -> "refraction normal" feel.
-    float eps = 0.0025;
+    float eps = 0.004;
     float h0 = heightAt(dist, radius, w, timeFade, distFade);
     float h1 = heightAt(dist + eps, radius, w, timeFade, distFade);
     float h2 = heightAt(max(0.0, dist - eps), radius, w, timeFade, distFade);
     float dh = (h1 - h2) / (2.0 * eps);
+    float dhClamped = clamp(dh, -1.0, 1.0);
+    float hClamped = clamp(h0, -1.0, 1.0);
 
     // Refraction: use slope + a tiny rotational component.
     vec2 perp = vec2(-dir.y, dir.x);
-    vec2 disp = (dir * dh + perp * (h0 * 0.35)) * uAmplitude;
+    vec2 disp = (dir * dhClamped + perp * (hClamped * 0.08)) * uAmplitude;
 
     vec2 uv2 = uv + disp;
     uv2 = clamp(uv2, vec2(0.0), vec2(1.0));
@@ -886,12 +960,14 @@ void main()
       const rippleUniforms = new PIXI.UniformGroup({
         uTime: { value: 0, type: "f32" },
         uCenter: { value: new PIXI.Point(0.5, 0.5), type: "vec2<f32>" },
-        uAmplitude: { value: 0.020, type: "f32" },
-        uFrequency: { value: 62.0, type: "f32" },
+        uAmplitude: { value: 0.0035, type: "f32" },
+        uFrequency: { value: 46.0, type: "f32" },
         uSpeed: { value: 0.65, type: "f32" },
-        uWidth: { value: 0.11, type: "f32" },
+        uWidth: { value: 0.13, type: "f32" },
         uDecay: { value: 1.7, type: "f32" },
         uAspect: { value: 1.0, type: "f32" },
+        uShapeAspect: { value: 1.0, type: "f32" },
+        uShapeRotation: { value: 0.0, type: "f32" },
         uDuration: { value: 1.25, type: "f32" },
       }) as unknown as RippleUniformGroup;
 
@@ -1894,8 +1970,58 @@ void main()
     const ry = ((e.clientY - rect.top) * app.renderer.height) / rect.height;
     const worldPoint = world.toLocal(new PIXI.Point(rx, ry));
 
-    // Visual feedback: ripple starts at the drop location.
-    triggerRippleAtRendererPoint(rx, ry);
+    // Visual feedback: ripple starts at the drop location and matches the dropped image aspect ratio (when possible).
+    let didTriggerRipple = false;
+    const readFileAspect = async (file: File): Promise<number | null> => {
+      try {
+        if (typeof (globalThis as any).createImageBitmap === "function") {
+          const bmp = await (globalThis as any).createImageBitmap(file);
+          const w = Number(bmp?.width ?? 0);
+          const h = Number(bmp?.height ?? 0);
+          try {
+            bmp?.close?.();
+          } catch {
+            // ignore
+          }
+          if (w > 0 && h > 0) return w / h;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Fallback: HTMLImageElement
+      try {
+        const url = URL.createObjectURL(file);
+        const aspect = await new Promise<number | null>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const w = Number(img.naturalWidth || 0);
+            const h = Number(img.naturalHeight || 0);
+            resolve(w > 0 && h > 0 ? w / h : null);
+          };
+          img.onerror = () => resolve(null);
+          img.src = url;
+        });
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+        return aspect;
+      } catch {
+        return null;
+      }
+    };
+
+    const firstImage = files.find((f) => (f.type || "").startsWith("image/")) ?? null;
+    if (firstImage) {
+      void readFileAspect(firstImage).then((shapeAspect) => {
+        if (didTriggerRipple) return;
+        if (!shapeAspect || !Number.isFinite(shapeAspect)) return;
+        didTriggerRipple = true;
+        triggerRippleAtRendererPoint(rx, ry, { shapeAspect, shapeRotation: 0 });
+      });
+    }
 
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
@@ -1920,6 +2046,16 @@ void main()
 
     const data = (await res.json()) as { assets: AssetWithAi[] };
     const uploaded = data.assets || [];
+
+    // If we couldn't infer aspect from the File, use the server-provided dimensions (if available).
+    if (!didTriggerRipple) {
+      const a0 = uploaded[0];
+      const w = Number(a0?.width ?? 0);
+      const h = Number(a0?.height ?? 0);
+      const shapeAspect = w > 0 && h > 0 ? w / h : 1;
+      didTriggerRipple = true;
+      triggerRippleAtRendererPoint(rx, ry, { shapeAspect, shapeRotation: 0 });
+    }
     setAssets((prev) => {
       const next = [...uploaded, ...prev];
       // de-dupe by id

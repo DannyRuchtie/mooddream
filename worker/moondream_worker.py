@@ -572,6 +572,24 @@ def _normalize_tag_candidate(s: str) -> str:
         "tiny",
         "smooth",
         "shiny",
+        "side",
+        # common non-object verbs from captions/query output
+        "show",
+        "shows",
+        "showing",
+        "depict",
+        "depicts",
+        "depicted",
+        "present",
+        "presents",
+        "presenting",
+        "placed",
+        "arranged",
+        # generic non-object terms
+        "image",
+        "photo",
+        "picture",
+        "scene",
         # number words
         "one",
         "two",
@@ -590,6 +608,9 @@ def _normalize_tag_candidate(s: str) -> str:
 
     # Prefer keeping noun phrases (e.g. "coffee table"), but drop leading modifiers.
     pruned = [w for w in words if w and w not in modifiers and not w.isdigit()]
+    # If a candidate is only modifiers/numbers, drop it entirely.
+    if not pruned and all((w in modifiers or w.isdigit()) for w in words):
+        return ""
     if pruned:
         words = pruned
 

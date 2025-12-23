@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Command } from "cmdk";
 
 import type { AssetWithAi, CanvasObjectRow } from "@/server/db/types";
@@ -20,6 +20,7 @@ export function AssetCommandPalette(props: {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<AssetWithAi[]>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const objectIdByAssetId = useMemo(() => {
     const m = new Map<string, string>();
@@ -56,6 +57,17 @@ export function AssetCommandPalette(props: {
     return () => window.clearTimeout(t);
   }, [open, search, props.projectId]);
 
+  useEffect(() => {
+    if (!open) return;
+    const raf = window.requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [open]);
+
   const items = open ? results : [];
 
   return (
@@ -73,6 +85,7 @@ export function AssetCommandPalette(props: {
         <Command className="flex flex-col overflow-hidden">
           <div className="border-b border-zinc-900 p-3">
             <Command.Input
+              ref={inputRef}
               autoFocus
               value={search}
               onValueChange={setSearch}
