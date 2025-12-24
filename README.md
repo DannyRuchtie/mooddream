@@ -253,3 +253,4 @@ flowchart LR
 
 -[ ] riple aspect ratio
 -[x] keyboard arrow navigation 
+- zoom back to fit image after arrow navigation 

@@ -306,7 +306,7 @@ export function AssetLightbox(props: {
   return (
     <div
       className={
-        "fixed inset-0 z-[9999] bg-black transition-opacity duration-200 " +
+        "fixed inset-0 z-[9999] bg-black/80 backdrop-blur transition-opacity duration-200 " +
         (entered ? "opacity-100" : "opacity-0")
       }
       onClick={() => requestClose()}

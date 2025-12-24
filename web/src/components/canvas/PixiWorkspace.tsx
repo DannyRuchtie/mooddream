@@ -124,9 +124,17 @@ const MAX_ZOOM = 1.0;
 const TAP_MAX_MOVE_PX = 6; // renderer-space px
 const FULLSCREEN_DBLCLICK_FIT_FACTOR = 0.75; // fraction of "fit zoom" considered "zoomed in"
 
+// Default "landscape" shape for the manual ripple test (R) when no item is selected.
+// 16:9 was still a bit subtle; use a wider ellipse so it reads clearly as landscape.
+const DEFAULT_RIPPLE_TEST_SHAPE_ASPECT = 3.2;
+
 // When focusing an image via the command palette, zoom so the image occupies most of the viewport.
 // Keep a bit of padding so it doesn't feel edge-to-edge.
 const FOCUS_FIT_SCREEN_FRACTION = 0.88;
+
+// When navigating via arrow keys, keep the current zoom unless the next item would be clipped.
+// In that case, zoom out just enough so the entire item is visible with a small margin.
+const NAVIGATE_FIT_SCREEN_FRACTION = 0.96;
 
 function fitZoomForSprite(
   sp: PIXI.Sprite,
@@ -260,6 +268,10 @@ export function PixiWorkspace(props: {
   const appRef = useRef<PIXI.Application | null>(null);
   const worldRef = useRef<PIXI.Container | null>(null);
   const worldRootRef = useRef<PIXI.Container | null>(null);
+  const worldOverlayRef = useRef<PIXI.Container | null>(null);
+  const worldSpritesLayerRef = useRef<PIXI.Container | null>(null);
+  const overlaySpritesLayerRef = useRef<PIXI.Container | null>(null);
+  const rippleExemptObjectIdsRef = useRef<Set<string>>(new Set());
   const spritesByObjectIdRef = useRef<Map<string, PIXI.Sprite>>(new Map());
   const shadowsByObjectIdRef = useRef<Map<string, PIXI.Graphics>>(new Map());
   const textureCacheRef = useRef<Map<string, PIXI.Texture>>(new Map());
@@ -285,6 +297,9 @@ export function PixiWorkspace(props: {
   // Drop ripple should only start once the dropped image is actually present on-canvas.
   // We store the renderer-space drop point + the newly created object id, then trigger
   // the ripple the moment that object's texture becomes available.
+  // Note: drops can overlap (async upload). We track a monotonically increasing seq so the
+  // latest drop wins and older responses can't override the pending ripple target.
+  const dropSeqRef = useRef(0);
   const pendingDropRippleRef = useRef<null | { objectId: string; rx: number; ry: number; fired: boolean }>(
     null
   );
@@ -458,10 +473,15 @@ export function PixiWorkspace(props: {
     const ripple = rippleRef.current;
     if (!app || !worldRoot || !ripple) return;
 
-    const w = Math.max(1, app.renderer.width);
-    const h = Math.max(1, app.renderer.height);
-    const x01 = clamp(rx / w, 0, 1);
-    const y01 = clamp(ry / h, 0, 1);
+    // IMPORTANT: uCenter is normalized within the filterArea (screen-space), not necessarily the full renderer.
+    // Use the actual filterArea bounds to avoid off-center ripples on resize / non-zero filterArea origins.
+    const fa = worldRoot.filterArea ?? app.screen;
+    const w = Math.max(1, Number(fa?.width ?? app.renderer.width));
+    const h = Math.max(1, Number(fa?.height ?? app.renderer.height));
+    const ox = Number(fa?.x ?? 0);
+    const oy = Number(fa?.y ?? 0);
+    const x01 = clamp((rx - ox) / w, 0, 1);
+    const y01 = clamp((ry - oy) / h, 0, 1);
 
     lastRippleCenter01Ref.current.set(x01, y01);
 
@@ -484,6 +504,13 @@ export function PixiWorkspace(props: {
     }
   };
 
+  const rippleOriginSpriteCenter = (sp: PIXI.Sprite): { rx: number; ry: number } => {
+    // Use the sprite's *screen-space* bounds so rotation is handled naturally.
+    // Start from the center of the "card" for a "card hits water" ripple feel.
+    const b = sp.getBounds();
+    return { rx: b.x + b.width / 2, ry: b.y + b.height / 2 };
+  };
+
   const maybeTriggerPendingDropRipple = (objectId: string, tex: PIXI.Texture | null | undefined) => {
     const pending = pendingDropRippleRef.current;
     if (!pending || pending.fired) return;
@@ -492,7 +519,37 @@ export function PixiWorkspace(props: {
     const h = Number(tex?.orig?.height ?? 0);
     if (!(w > 0 && h > 0)) return;
     pending.fired = true;
-    triggerRippleAtRendererPoint(pending.rx, pending.ry, { shapeAspect: w / h, shapeRotation: 0 });
+    const sp = spritesByObjectIdRef.current.get(objectId);
+    const sx = Math.abs(sp?.scale?.x ?? 1) || 1;
+    const sy = Math.abs(sp?.scale?.y ?? 1) || 1;
+    const shapeAspect = (w * sx) / Math.max(1e-6, h * sy);
+    const shapeRotation = Number(sp?.rotation ?? 0) || 0;
+    if (sp) {
+      // Exempt the newly dropped card from the ripple so the effect reads as "water behind it".
+      // We do this by temporarily reparenting the sprite (and its shadow) into an unfiltered overlay layer.
+      const world = worldRef.current;
+      const worldOverlay = worldOverlayRef.current;
+      if (world && worldOverlay) {
+        worldOverlay.position.set(world.position.x, world.position.y);
+        worldOverlay.scale.set(world.scale.x, world.scale.y);
+        worldOverlay.rotation = world.rotation ?? 0;
+      }
+      const overlayLayer = overlaySpritesLayerRef.current;
+      if (overlayLayer) {
+        const sh = shadowsByObjectIdRef.current.get(objectId);
+        if (sh) overlayLayer.addChild(sh);
+        overlayLayer.addChild(sp);
+        rippleExemptObjectIdsRef.current.add(objectId);
+      }
+
+      const { rx, ry } = rippleOriginSpriteCenter(sp);
+      triggerRippleAtRendererPoint(rx, ry, { shapeAspect, shapeRotation });
+      // Clear so subsequent drops can set a fresh pending ripple target.
+      pendingDropRippleRef.current = null;
+    } else {
+      triggerRippleAtRendererPoint(pending.rx, pending.ry, { shapeAspect, shapeRotation });
+      pendingDropRippleRef.current = null;
+    }
   };
 
   const objectsRef = useRef<CanvasObjectRow[]>(initialObjects);
@@ -611,8 +668,8 @@ export function PixiWorkspace(props: {
               flushDraftToServer(),
               new Promise<void>((resolve) => window.setTimeout(resolve, waitMs)),
             ]);
-          } catch {
-            // ignore
+      } catch {
+        // ignore
           }
         }
         if (!cancelled) setBooting(false);
@@ -1046,9 +1103,17 @@ export function PixiWorkspace(props: {
 
   // Keyboard delete/backspace to remove selected objects from canvas + DB (via canvas save).
   useEffect(() => {
+    const isTypingActiveElement = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return !!(
+        el &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || (el as any).isContentEditable)
+      );
+    };
+
     const resetZoomToTenPercent = () => {
-      const app = appRef.current;
-      const world = worldRef.current;
+        const app = appRef.current;
+        const world = worldRef.current;
       if (!app || !world) return;
 
       // Keep the current viewport center pinned while zooming out.
@@ -1078,9 +1143,9 @@ export function PixiWorkspace(props: {
     };
 
     const focusToggle = (opts: { requireHover: boolean }) => {
-      const app = appRef.current;
-      const world = worldRef.current;
-      if (!app || !world) return;
+        const app = appRef.current;
+        const world = worldRef.current;
+        if (!app || !world) return;
 
       if (opts.requireHover && !canvasHoverRef.current) return;
 
@@ -1103,7 +1168,7 @@ export function PixiWorkspace(props: {
 
       // Compute the exact same zoom-out target as pressing "0": 10% zoom,
       // keeping the current viewport center pinned in world space.
-      const center = new PIXI.Point(app.renderer.width / 2, app.renderer.height / 2);
+        const center = new PIXI.Point(app.renderer.width / 2, app.renderer.height / 2);
       const centerWorld = world.toLocal(center);
       const outZoom = clamp(0.1, MIN_ZOOM, MAX_ZOOM);
       const outView = {
@@ -1125,14 +1190,14 @@ export function PixiWorkspace(props: {
           onComplete: () => {
             const w2 = worldRef.current;
             if (!w2) return;
-            scheduleViewSave({
+        scheduleViewSave({
               world_x: w2.position.x,
               world_y: w2.position.y,
               zoom: w2.scale.x,
-            });
-            schedulePreviewSave();
+        });
+        schedulePreviewSave();
           },
-        }
+      }
       );
     };
 
@@ -1262,8 +1327,17 @@ export function PixiWorkspace(props: {
 
       setSelectedIds([bestId]);
 
-      // Animate pan to center selected, keep current zoom.
-      const zoom = world.scale.x || 1;
+      // Animate pan to center selected. Keep current zoom unless the selected item wouldn't fit;
+      // then zoom out just enough so it's fully visible.
+      const currentZoom = world.scale.x || 1;
+      const fitZoom =
+        fitZoomForSprite(
+          targetSprite,
+          app.renderer.width,
+          app.renderer.height,
+          NAVIGATE_FIT_SCREEN_FRACTION
+        ) ?? null;
+      const zoom = fitZoom ? Math.min(currentZoom, fitZoom) : currentZoom;
       const p = targetSprite.position;
       const endX = app.renderer.width / 2 - p.x * zoom;
       const endY = app.renderer.height / 2 - p.y * zoom;
@@ -1288,42 +1362,23 @@ export function PixiWorkspace(props: {
 
     const onKeyDown = (e: KeyboardEvent) => {
       // Don't intercept when typing.
-      const el = document.activeElement as HTMLElement | null;
-      const isTyping =
-        el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          (el as any).isContentEditable);
+      const isTyping = isTypingActiveElement();
 
       // Trigger ripple for testing with "r".
       if (!isTyping && (e.key === "r" || e.key === "R")) {
         const app = appRef.current;
-        const world = worldRef.current;
         if (!app) return;
         e.preventDefault();
 
-        // Prefer triggering from the currently selected image (if exactly one is selected).
-        const selectedId = selectedIdsRef.current.length === 1 ? selectedIdsRef.current[0] : null;
-        if (selectedId && world) {
-          const sp = spritesByObjectIdRef.current.get(selectedId);
-          if (sp) {
-            const p = sp.getGlobalPosition(new PIXI.Point());
-            const tw = sp.texture?.orig?.width ?? 0;
-            const th = sp.texture?.orig?.height ?? 0;
-            const sx = Math.abs(sp.scale.x) || 1;
-            const sy = Math.abs(sp.scale.y) || 1;
-            const shapeAspect =
-              tw > 0 && th > 0 ? (tw * sx) / Math.max(1e-6, th * sy) : 1;
-            triggerRippleAtRendererPoint(p.x, p.y, {
-              shapeAspect,
-              shapeRotation: sp.rotation,
-            });
-            return;
-          }
-        }
-
-        // Fallback: use the last ripple origin (defaults to center if none).
-        triggerRippleAtRendererPoint(app.renderer.width / 2, app.renderer.height / 2);
+        // Manual ripple test: always start from the center of the screen.
+        const worldRoot = worldRootRef.current;
+        const fa = worldRoot?.filterArea ?? app.screen;
+        const cx = Number(fa?.x ?? 0) + Number(fa?.width ?? app.renderer.width) / 2;
+        const cy = Number(fa?.y ?? 0) + Number(fa?.height ?? app.renderer.height) / 2;
+        triggerRippleAtRendererPoint(cx, cy, {
+          shapeAspect: DEFAULT_RIPPLE_TEST_SHAPE_ASPECT,
+          shapeRotation: 0,
+        });
         return;
       }
 
@@ -1367,7 +1422,12 @@ export function PixiWorkspace(props: {
     window.addEventListener("keydown", onKeyDown);
     const onResetZoom = () => resetZoomToTenPercent();
     const onFocusToggle = () => focusToggle({ requireHover: false });
-    const onDeleteSelection = () => void deleteSelection();
+    const onDeleteSelection = () => {
+      // If a native menu item/accelerator triggers deletion, keep parity with the keydown path:
+      // don't delete the canvas selection while the user is typing into an input/textarea.
+      if (isTypingActiveElement()) return;
+      void deleteSelection();
+    };
     window.addEventListener("moondream:canvas:reset-zoom", onResetZoom as EventListener);
     window.addEventListener("moondream:canvas:focus-toggle", onFocusToggle as EventListener);
     window.addEventListener("moondream:canvas:delete-selection", onDeleteSelection as EventListener);
@@ -1405,16 +1465,40 @@ export function PixiWorkspace(props: {
 
       // Root container for the world. This stays in screen-space so we can apply screen-space
       // filters (like ripple) without having filter bounds explode due to panning/zooming.
+      // We also maintain an unfiltered overlay layer so the dropped "card" can sit above the ripple.
+      const stageRoot = new PIXI.Container();
+      app.stage.addChild(stageRoot);
+
+      // Filtered layer (ripple affects everything in here)
       const worldRoot = new PIXI.Container();
       worldRootRef.current = worldRoot;
       // Constrain filter work to the visible viewport (renderer/screen space).
       worldRoot.filterArea = app.screen;
-      app.stage.addChild(worldRoot);
+      stageRoot.addChild(worldRoot);
+
+      // Unfiltered overlay layer (used to temporarily exempt a dropped card from the ripple)
+      const overlayRoot = new PIXI.Container();
+      stageRoot.addChild(overlayRoot);
 
       const world = new PIXI.Container();
       world.sortableChildren = true;
       worldRef.current = world;
       worldRoot.addChild(world);
+
+      const worldSpritesLayer = new PIXI.Container();
+      worldSpritesLayer.sortableChildren = true;
+      worldSpritesLayerRef.current = worldSpritesLayer;
+      world.addChild(worldSpritesLayer);
+
+      const worldOverlay = new PIXI.Container();
+      worldOverlay.sortableChildren = true;
+      worldOverlayRef.current = worldOverlay;
+      overlayRoot.addChild(worldOverlay);
+
+      const overlaySpritesLayer = new PIXI.Container();
+      overlaySpritesLayer.sortableChildren = true;
+      overlaySpritesLayerRef.current = overlaySpritesLayer;
+      worldOverlay.addChild(overlaySpritesLayer);
 
       // WebGL ripple filter (triggered on drop + "r" shortcut).
       // Note: We only provide the WebGL program. If Pixi ever runs via WebGPU here, this effect will be skipped.
@@ -1654,7 +1738,7 @@ void main()
       const selectionLayer = new PIXI.Container();
       selectionLayer.zIndex = 1_000_000_000;
       selectionLayerRef.current = selectionLayer;
-      world.addChild(selectionLayer);
+      worldOverlay.addChild(selectionLayer);
 
       const selectionBox = new PIXI.Graphics();
       selectionBoxRef.current = selectionBox;
@@ -1665,7 +1749,7 @@ void main()
       // Ensure multi-select outlines render above sprites (but below single-select handles).
       multiSel.zIndex = 999_999_999;
       multiSelectionRef.current = multiSel;
-      world.addChild(multiSel);
+      worldOverlay.addChild(multiSel);
 
       const makeHandle = (corner: "tl" | "tr" | "br" | "bl") => {
         const g = new PIXI.Graphics();
@@ -2366,6 +2450,13 @@ void main()
       };
 
       app.ticker.add((ticker) => {
+        // Keep the unfiltered overlay world aligned with the filtered world (pan + zoom).
+        if (worldOverlayRef.current) {
+          worldOverlayRef.current.position.set(world.position.x, world.position.y);
+          worldOverlayRef.current.scale.set(world.scale.x, world.scale.y);
+          worldOverlayRef.current.rotation = world.rotation ?? 0;
+        }
+
         // Drive ripple shader if active.
         const ripple = rippleRef.current;
         if (ripple && ripple.active) {
@@ -2384,6 +2475,19 @@ void main()
             }
             if (worldRoot.filters && worldRoot.filters.length === 0) {
               worldRoot.filters = [];
+            }
+
+            // Restore any sprites we temporarily exempted from the ripple (drop card).
+            const ids = rippleExemptObjectIdsRef.current;
+            const mainLayer = worldSpritesLayerRef.current;
+            if (mainLayer && ids.size) {
+              for (const id of [...ids]) {
+                const sh = shadowsByObjectIdRef.current.get(id);
+                const sp = spritesByObjectIdRef.current.get(id);
+                if (sh) mainLayer.addChild(sh);
+                if (sp) mainLayer.addChild(sp);
+              }
+              ids.clear();
             }
           }
         }
@@ -2509,7 +2613,7 @@ void main()
       });
 
       // Initial render
-      rebuildWorldSprites(world);
+      rebuildWorldSprites(worldSpritesLayer);
       // Seed a preview shortly after first paint.
       schedulePreviewSave();
     })();
@@ -2545,7 +2649,7 @@ void main()
           onComplete: () => {
             const w2 = worldRef.current;
             if (!w2) return;
-            scheduleViewSave({
+      scheduleViewSave({
               world_x: w2.position.x,
               world_y: w2.position.y,
               zoom: w2.scale.x,
@@ -2569,13 +2673,13 @@ void main()
 
   // Keep sprites in sync when objects/assets change
   useEffect(() => {
-    const world = worldRef.current;
-    if (!world) return;
-    rebuildWorldSprites(world);
+    const layer = worldSpritesLayerRef.current;
+    if (!layer) return;
+    rebuildWorldSprites(layer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objects, assetById]);
 
-  const rebuildWorldSprites = (world: PIXI.Container) => {
+  const rebuildWorldSprites = (worldLayer: PIXI.Container) => {
     const keep = new Set(objects.map((o) => o.id));
     for (const [id, display] of spritesByObjectIdRef.current.entries()) {
       if (!keep.has(id)) {
@@ -2636,7 +2740,7 @@ void main()
         (sh as any).__objectId = o.id;
         shadowsByObjectIdRef.current.set(o.id, sh);
         shadowLiftByObjectIdRef.current.set(o.id, { current: 0, target: 0 });
-        world.addChild(sh);
+        worldLayer.addChild(sh);
 
         const sp = new PIXI.Sprite(PIXI.Texture.EMPTY);
         sp.eventMode = "static";
@@ -2648,7 +2752,7 @@ void main()
         sp.zIndex = o.z_index;
         (sp as any).__objectId = o.id;
         spritesByObjectIdRef.current.set(o.id, sp);
-        world.addChild(sp);
+        worldLayer.addChild(sp);
 
         // Hover video preview: show progress bar while hovered.
         if (isVideoMime(a.mime_type)) {
@@ -2768,6 +2872,8 @@ void main()
     const world = worldRef.current;
     if (!app || !world) return;
 
+    const dropSeq = ++dropSeqRef.current;
+
     const files = Array.from(e.dataTransfer.files || []);
     if (files.length === 0) return;
 
@@ -2819,7 +2925,10 @@ void main()
 
     const newIds = uploaded.map(() => uuid());
     if (newIds.length > 0) {
-      pendingDropRippleRef.current = { objectId: newIds[0], rx, ry, fired: false };
+      // Only keep the latest in-flight drop as the pending ripple target.
+      if (dropSeq === dropSeqRef.current) {
+        pendingDropRippleRef.current = { objectId: newIds[0], rx, ry, fired: false };
+      }
     }
     const nowIso = new Date().toISOString();
     setObjects((prev) => {
@@ -2885,7 +2994,7 @@ void main()
               "rounded-full border px-3 py-1 text-[11px] font-medium " +
               (!syncUi.online
                 ? "border-red-900/50 bg-red-950/50 text-red-200"
-                : "border-amber-900/40 bg-amber-950/35 text-amber-200")
+                  : "border-amber-900/40 bg-amber-950/35 text-amber-200")
             }
           >
             {"Offline"}

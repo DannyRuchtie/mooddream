@@ -391,8 +391,15 @@ fn main() {
   let settings = CustomMenuItem::new("settings".to_string(), "Settings").accelerator("CmdOrCtrl+,");
   let command_palette =
     CustomMenuItem::new("command_palette".to_string(), "Command Palette").accelerator("CmdOrCtrl+K");
-  let delete_selection = CustomMenuItem::new("delete_selection".to_string(), "Delete Selection")
-    .accelerator("Backspace");
+  // On macOS, users expect ⌘⌫ ("Command+Delete") as the "delete selection" shortcut.
+  // Avoid CmdOrCtrl+Backspace because Ctrl+Backspace is a common text-editing shortcut on Windows/Linux.
+  let delete_accel = if cfg!(target_os = "macos") {
+    "Cmd+Backspace"
+  } else {
+    "Backspace"
+  };
+  let delete_selection =
+    CustomMenuItem::new("delete_selection".to_string(), "Delete Selection").accelerator(delete_accel);
   let reset_zoom = CustomMenuItem::new("reset_zoom".to_string(), "Reset Zoom (10%)").accelerator("CmdOrCtrl+0");
   let focus_toggle = CustomMenuItem::new("focus_toggle".to_string(), "Focus Toggle").accelerator("Space");
 
