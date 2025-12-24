@@ -251,5 +251,5 @@ flowchart LR
 
 ## Todo
 
-[] riple aspect ratio
-[] keyboard arrow navigation 
+-[ ] riple aspect ratio
+-[x] keyboard arrow navigation 

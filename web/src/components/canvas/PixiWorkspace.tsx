@@ -2085,16 +2085,29 @@ void main()
         selectionLayer.rotation = sprite.rotation;
         selectionLayer.scale.set(sprite.scale.x, sprite.scale.y);
 
+        // Make the selection affordances readable when zoomed out:
+        // - Compute a desired thickness in *screen px* that grows as you zoom out.
+        // - Convert that into local stroke widths by dividing out world zoom and sprite scale.
+        const world = worldRef.current;
+        const worldZoom = world?.scale?.x || 1;
+        const safeWorldZoom = Math.max(0.0001, worldZoom);
+        const safeSpriteScale = Math.max(0.0001, Math.abs(sprite.scale.x) || 1);
+        // Subtle scaling: a *small* boost only when very zoomed out.
+        // Map zoom ∈ [0.06 .. 0.18] to t ∈ [1 .. 0], then lerp sizes.
+        const t = clamp((0.18 - safeWorldZoom) / (0.18 - 0.06), 0, 1);
+        const strokePx = lerp(2.2, 3.2, t);
+        const handlePx = lerp(9, 11, t);
+
         // Draw box in local coords, so it matches sprite transform.
         selectionBox.clear();
         selectionBox.rect(-baseW / 2, -baseH / 2, baseW, baseH);
         selectionBox.stroke({
-          width: 2 / Math.max(0.0001, sprite.scale.x),
+          width: strokePx / (safeSpriteScale * safeWorldZoom),
           color: 0x60a5fa,
           alpha: 0.9,
         });
 
-        const handleSize = 10 / Math.max(0.0001, sprite.scale.x);
+        const handleSize = handlePx / (safeSpriteScale * safeWorldZoom);
         const pts = handleLocalPoints(baseW, baseH);
         for (const key of ["tl", "tr", "br", "bl"] as const) {
           const h = handles[key] as PIXI.Graphics | undefined;
@@ -2102,7 +2115,7 @@ void main()
           h.clear();
           h.rect(pts[key].x - handleSize / 2, pts[key].y - handleSize / 2, handleSize, handleSize);
           h.fill(0xf8fafc);
-          h.stroke({ width: 1 / Math.max(0.0001, sprite.scale.x), color: 0x1f2937, alpha: 0.9 });
+          h.stroke({ width: 1.25 / (safeSpriteScale * safeWorldZoom), color: 0x1f2937, alpha: 0.9 });
           (h as any).__handle = { corner: key };
         }
       };
