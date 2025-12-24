@@ -1210,6 +1210,82 @@ export function PixiWorkspace(props: {
       }, 0);
     };
 
+    const navigateSelection = (dir: "left" | "right" | "up" | "down") => {
+      const app = appRef.current;
+      const world = worldRef.current;
+      if (!app || !world) return;
+
+      const selectedId = selectedIdsRef.current.length === 1 ? selectedIdsRef.current[0] : null;
+      if (!selectedId) return;
+
+      const currentSprite = spritesByObjectIdRef.current.get(selectedId) as PIXI.Sprite | undefined;
+      if (!currentSprite) return;
+
+      const curX = currentSprite.position.x;
+      const curY = currentSprite.position.y;
+      const EPS = 1e-6;
+
+      const objects = objectsRef.current ?? [];
+      let bestId: string | null = null;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      for (const o of objects) {
+        if (o.id === selectedId) continue;
+        const sp = spritesByObjectIdRef.current.get(o.id) as PIXI.Sprite | undefined;
+        if (!sp) continue;
+
+        const dx = sp.position.x - curX;
+        const dy = sp.position.y - curY;
+
+        // Direction filter.
+        if (dir === "left" && !(dx < -EPS)) continue;
+        if (dir === "right" && !(dx > EPS)) continue;
+        if (dir === "up" && !(dy < -EPS)) continue;
+        if (dir === "down" && !(dy > EPS)) continue;
+
+        // Score: prioritize movement along primary axis, penalize sideways drift.
+        // This feels like "nearest in that direction" rather than strict angle matching.
+        const primary = dir === "left" || dir === "right" ? Math.abs(dx) : Math.abs(dy);
+        const secondary = dir === "left" || dir === "right" ? Math.abs(dy) : Math.abs(dx);
+        const score = primary + secondary * 0.45;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestId = o.id;
+        }
+      }
+
+      if (!bestId) return;
+
+      const targetSprite = spritesByObjectIdRef.current.get(bestId) as PIXI.Sprite | undefined;
+      if (!targetSprite) return;
+
+      setSelectedIds([bestId]);
+
+      // Animate pan to center selected, keep current zoom.
+      const zoom = world.scale.x || 1;
+      const p = targetSprite.position;
+      const endX = app.renderer.width / 2 - p.x * zoom;
+      const endY = app.renderer.height / 2 - p.y * zoom;
+      cancelViewAnimation();
+      animateViewTo(
+        { x: endX, y: endY, zoom },
+        {
+          durationMs: 220,
+          onComplete: () => {
+            const w2 = worldRef.current;
+            if (!w2) return;
+            scheduleViewSave({
+              world_x: w2.position.x,
+              world_y: w2.position.y,
+              zoom: w2.scale.x,
+            });
+            schedulePreviewSave();
+          },
+        }
+      );
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       // Don't intercept when typing.
       const el = document.activeElement as HTMLElement | null;
@@ -1268,6 +1344,22 @@ export function PixiWorkspace(props: {
       }
 
       if (isTyping) return;
+
+      // Arrow-key navigation between objects (requires exactly 1 selected).
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const dir =
+          e.key === "ArrowLeft"
+            ? "left"
+            : e.key === "ArrowRight"
+              ? "right"
+              : e.key === "ArrowUp"
+                ? "up"
+                : "down";
+        navigateSelection(dir);
+        return;
+      }
+
       if (e.key !== "Backspace" && e.key !== "Delete") return;
       e.preventDefault();
       void deleteSelection();
