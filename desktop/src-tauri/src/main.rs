@@ -391,6 +391,12 @@ fn main() {
   let settings = CustomMenuItem::new("settings".to_string(), "Settings").accelerator("CmdOrCtrl+,");
   let command_palette =
     CustomMenuItem::new("command_palette".to_string(), "Command Palette").accelerator("CmdOrCtrl+K");
+  // Mirrors the in-app shortcut (Cmd/Ctrl+F) used to open the command palette search.
+  let find_assets =
+    CustomMenuItem::new("find_assets".to_string(), "Find…").accelerator("CmdOrCtrl+F");
+  // Project-context Settings shortcut used in the UI (Cmd/Ctrl+.).
+  let project_settings =
+    CustomMenuItem::new("project_settings".to_string(), "Project Settings…").accelerator("CmdOrCtrl+.");
   // On macOS, users expect ⌘⌫ ("Command+Delete") as the "delete selection" shortcut.
   // Avoid CmdOrCtrl+Backspace because Ctrl+Backspace is a common text-editing shortcut on Windows/Linux.
   let delete_accel = if cfg!(target_os = "macos") {
@@ -414,7 +420,11 @@ fn main() {
     .add_native_item(MenuItem::Separator)
     .add_native_item(MenuItem::Quit);
 
-  let file_menu = Menu::new().add_item(settings.clone()).add_native_item(MenuItem::Separator).add_native_item(MenuItem::CloseWindow);
+  let file_menu = Menu::new()
+    .add_item(project_settings.clone())
+    .add_item(settings.clone())
+    .add_native_item(MenuItem::Separator)
+    .add_native_item(MenuItem::CloseWindow);
 
   let edit_menu = Menu::new()
     .add_native_item(MenuItem::Undo)
@@ -423,7 +433,9 @@ fn main() {
     .add_native_item(MenuItem::Cut)
     .add_native_item(MenuItem::Copy)
     .add_native_item(MenuItem::Paste)
-    .add_native_item(MenuItem::SelectAll);
+    .add_native_item(MenuItem::SelectAll)
+    .add_native_item(MenuItem::Separator)
+    .add_item(find_assets.clone());
 
   let view_menu = Menu::new()
     .add_item(command_palette.clone())
@@ -459,8 +471,31 @@ fn main() {
           // Navigate within the Next.js app.
           let _ = event.window().eval("window.location.href = '/settings';");
         }
+        "project_settings" => {
+          // Navigate with a fade, and include projectId when we're currently in /projects/:id.
+          //
+          // Mirrors the in-app shortcut logic:
+          // - "." opens Settings (project context)
+          // - Cmd+. / Ctrl+. also opens Settings (project context)
+          //
+          // Note: we do this here (rather than relying only on a web listener) so it still works
+          // even if the project page hasn't mounted its listeners yet.
+          let js = r#"
+            (function () {
+              try { window.dispatchEvent(new Event("moondream:route-fade:start")); } catch (_) {}
+              var m = (window.location && window.location.pathname || "").match(/^\/projects\/([^\/?#]+)/);
+              var pid = m && m[1] ? decodeURIComponent(m[1]) : null;
+              var url = pid ? ("/settings?projectId=" + encodeURIComponent(pid)) : "/settings";
+              window.setTimeout(function () { window.location.href = url; }, 220);
+            })();
+          "#;
+          let _ = event.window().eval(js);
+        }
         "command_palette" => {
           dispatch_web_event(event.window(), "moondream:command-palette:toggle");
+        }
+        "find_assets" => {
+          dispatch_web_event(event.window(), "moondream:command-palette:open");
         }
         "delete_selection" => {
           dispatch_web_event(event.window(), "moondream:canvas:delete-selection");

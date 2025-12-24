@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 
 import type { ProjectRow } from "@/server/db/types";
+import { ROUTE_FADE_MS, dispatchRouteFadeStart } from "@/lib/routeFade";
 
 function Portal(props: { children: React.ReactNode }) {
   if (typeof document === "undefined") return null;
@@ -151,7 +152,23 @@ export function ProjectDropdown(props: {
         }
       >
         <span className="max-w-[220px] truncate">{current?.name ?? "Select project"}</span>
-        <span className="text-zinc-500">▾</span>
+        <span aria-hidden className="text-current">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            className="h-4 w-4"
+          >
+            <path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
       </button>
 
       <Portal>
@@ -245,7 +262,7 @@ export function ProjectDropdown(props: {
                   }}
                   className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-zinc-200 hover:bg-zinc-900"
                 >
-                  <span>Search</span>
+                  <span>Search board</span>
                   <span className="rounded border border-zinc-800 bg-zinc-900/40 px-1.5 py-0.5 text-[10px] text-zinc-400">
                     {isMac ? "⌘K" : "Ctrl+K"}
                   </span>
@@ -254,7 +271,10 @@ export function ProjectDropdown(props: {
                   onClick={() => {
                     setOpen(false);
                     setActionsFor(null);
-                    router.push(`/settings?projectId=${encodeURIComponent(props.currentProjectId)}`);
+                    dispatchRouteFadeStart();
+                    window.setTimeout(() => {
+                      router.push(`/settings?projectId=${encodeURIComponent(props.currentProjectId)}`);
+                    }, ROUTE_FADE_MS);
                   }}
                   className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-sm text-zinc-200 hover:bg-zinc-900"
                 >

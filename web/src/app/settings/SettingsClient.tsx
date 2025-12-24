@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+
+import { ROUTE_FADE_MS, dispatchRouteFadeEnd, dispatchRouteFadeStart } from "@/lib/routeFade";
 
 type StorageMode = "local" | "icloud";
 type AiProvider = "local_station" | "huggingface";
@@ -21,6 +23,11 @@ export default function SettingsClient() {
   const router = useRouter();
   const sp = useSearchParams();
   const projectId = sp?.get("projectId") ?? null;
+
+  const [transitionState, setTransitionState] = useState<"enter" | "entered" | "exit">("enter");
+  const exitTimerRef = useRef<number | null>(null);
+  const isExitingRef = useRef(false);
+  const projectIdRef = useRef<string | null>(projectId);
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -60,9 +67,72 @@ export default function SettingsClient() {
     };
   }, []);
 
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  // If we arrived via a route fade (e.g. opening Settings from the board), allow the overlay to fade away.
+  useEffect(() => {
+    dispatchRouteFadeEnd();
+  }, []);
+
+  // Fade in on mount.
+  useEffect(() => {
+    const raf = window.requestAnimationFrame(() => setTransitionState("entered"));
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+
+  const navigateBack = () => {
+    const pid = projectIdRef.current;
+    const back = pid ? `/projects/${pid}` : "/";
+    router.push(back);
+  };
+
+  const requestExit = () => {
+    if (isExitingRef.current) return;
+    isExitingRef.current = true;
+    dispatchRouteFadeStart();
+    setTransitionState("exit");
+    if (exitTimerRef.current) window.clearTimeout(exitTimerRef.current);
+    exitTimerRef.current = window.setTimeout(() => {
+      exitTimerRef.current = null;
+      navigateBack();
+    }, ROUTE_FADE_MS);
+  };
+
+  // Cleanup (unmount) only: don't cancel our exit timer just because state changes.
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current) window.clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    };
+  }, []);
+
+  // Allow closing via Escape with the same fade-out.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      requestExit();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="fixed inset-0 overflow-auto text-zinc-50">
+      {/* Backdrop */}
+      <div
+        className={`pointer-events-none fixed inset-0 bg-black transition-opacity duration-200 ease-out motion-reduce:transition-none ${
+          transitionState === "entered" || transitionState === "exit" ? "opacity-100" : "opacity-0"
+        }`}
+      />
+
+      <div
+        className={`relative mx-auto max-w-3xl px-6 py-10 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none ${
+          transitionState === "entered" ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1"
+        }`}
+      >
         <div className="flex items-center justify-between">
           <div>
             <div className="text-lg font-semibold">Settings</div>
@@ -70,8 +140,7 @@ export default function SettingsClient() {
           </div>
           <button
             onClick={() => {
-              const back = projectId ? `/projects/${projectId}` : "/";
-              router.push(back);
+              requestExit();
             }}
             className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
           >

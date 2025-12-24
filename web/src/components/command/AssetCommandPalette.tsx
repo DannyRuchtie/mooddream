@@ -79,6 +79,13 @@ export function AssetCommandPalette(props: {
     return () => window.removeEventListener("moondream:command-palette:toggle", onToggle as EventListener);
   }, []);
 
+  // Desktop menu bridge (Tauri): explicit "open" (used for Cmd/Ctrl+F).
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("moondream:command-palette:open", onOpen as EventListener);
+    return () => window.removeEventListener("moondream:command-palette:open", onOpen as EventListener);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     const t = window.setTimeout(async () => {

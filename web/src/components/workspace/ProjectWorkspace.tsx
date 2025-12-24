@@ -7,6 +7,7 @@ import type { AssetWithAi, CanvasObjectRow, ProjectRow, ProjectViewRow } from "@
 import { PixiWorkspace } from "@/components/canvas/PixiWorkspace";
 import { AssetCommandPalette } from "@/components/command/AssetCommandPalette";
 import { ProjectDropdown } from "@/components/projects/ProjectDropdown";
+import { ROUTE_FADE_MS, dispatchRouteFadeEnd, dispatchRouteFadeStart } from "@/lib/routeFade";
 
 function clientUuid() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -46,6 +47,9 @@ export function ProjectWorkspace(props: {
   // We intentionally keep the UI minimal (Figma-like): just canvas + a tiny top bar.
 
   useEffect(() => {
+    // If we're arriving from a fade transition (e.g. closing Settings), reveal the board.
+    dispatchRouteFadeEnd();
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") return;
       if (isEditableTarget(e.target)) return;
@@ -58,7 +62,10 @@ export function ProjectWorkspace(props: {
       // Also support Cmd+. / Ctrl+. (matches existing desktop convention).
       if (e.key === "." && !e.altKey && (!e.metaKey && !e.ctrlKey ? true : mod)) {
         e.preventDefault();
-        router.push(`/settings?projectId=${encodeURIComponent(project.id)}`);
+        dispatchRouteFadeStart();
+        window.setTimeout(() => {
+          router.push(`/settings?projectId=${encodeURIComponent(project.id)}`);
+        }, ROUTE_FADE_MS);
       }
     };
     window.addEventListener("keydown", onKeyDown);
