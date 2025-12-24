@@ -456,58 +456,55 @@ export function AssetLightbox(props: {
                 </div>
               </section>
 
-              <section>
-                <div className="text-xs font-medium text-zinc-300">Segments</div>
-                <div className="mt-2">
-                  {segments === null ? (
-                    <div className="text-xs text-zinc-500">Loading…</div>
-                  ) : segments.length ? (
-                    <>
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="text-xs text-zinc-500">
-                          Click a tag to highlight it on the image.
-                        </div>
-                        {selectedSegmentTag ? (
-                          <button
-                            onClick={() => setSelectedSegmentTag(null)}
-                            className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/50"
-                          >
-                            Clear
-                          </button>
-                        ) : null}
+              {segments?.length ? (
+                <section>
+                  <div className="text-xs font-medium text-zinc-300">Segments</div>
+                  <div className="mt-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-xs text-zinc-500">
+                        Click a tag to highlight it on the image.
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {segments.slice(0, 80).map((s) => {
-                          const selected = s.tag === selectedSegmentTag;
-                          return (
-                            <button
-                              type="button"
-                              key={s.tag}
-                              onClick={() => setSelectedSegmentTag((cur) => (cur === s.tag ? null : s.tag))}
-                              className={
-                                "rounded-full border px-2 py-1 text-xs " +
-                                (selected
-                                  ? "border-violet-400/60 bg-violet-500/15 text-zinc-100"
-                                  : "border-white/10 bg-black/20 text-zinc-200 hover:bg-black/30")
-                              }
-                              title={s.updatedAt}
-                            >
-                              {s.tag}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      {selectedSegmentTag && !selectedSegment?.svg && !parseBoxesFromBboxJson(selectedSegment?.bboxJson ?? null).length ? (
-                        <div className="mt-2 text-xs text-zinc-500">
-                          No overlay data cached for <span className="text-zinc-300">{selectedSegmentTag}</span>.
-                        </div>
+                      {selectedSegmentTag ? (
+                        <button
+                          onClick={() => setSelectedSegmentTag(null)}
+                          className="rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/50"
+                        >
+                          Clear
+                        </button>
                       ) : null}
-                    </>
-                  ) : (
-                    <div className="text-xs text-zinc-500">No cached segments.</div>
-                  )}
-                </div>
-              </section>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {segments.slice(0, 80).map((s) => {
+                        const selected = s.tag === selectedSegmentTag;
+                        return (
+                          <button
+                            type="button"
+                            key={s.tag}
+                            onClick={() => setSelectedSegmentTag((cur) => (cur === s.tag ? null : s.tag))}
+                            className={
+                              "rounded-full border px-2 py-1 text-xs " +
+                              (selected
+                                ? "border-violet-400/60 bg-violet-500/15 text-zinc-100"
+                                : "border-white/10 bg-black/20 text-zinc-200 hover:bg-black/30")
+                            }
+                            title={s.updatedAt}
+                          >
+                            {s.tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedSegmentTag &&
+                    !selectedSegment?.svg &&
+                    !parseBoxesFromBboxJson(selectedSegment?.bboxJson ?? null).length ? (
+                      <div className="mt-2 text-xs text-zinc-500">
+                        No overlay data cached for{" "}
+                        <span className="text-zinc-300">{selectedSegmentTag}</span>.
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
 
               <section>
                 <div className="text-xs font-medium text-zinc-300">File</div>
