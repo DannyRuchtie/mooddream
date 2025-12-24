@@ -33,6 +33,15 @@ struct StorageSettings {
   mode: Option<String>, // "local" | "icloud"
   #[serde(alias = "icloudPath")]
   icloud_path: Option<String>,
+  migration: Option<MigrationSettings>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MigrationSettings {
+  from: String,
+  to: String,
+  #[serde(alias = "requestedAt")]
+  requested_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -111,6 +120,107 @@ fn read_settings(config_root: &PathBuf) -> AppSettings {
     serde_json::from_str::<AppSettings>(&s).unwrap_or_default()
   } else {
     AppSettings::default()
+  }
+}
+
+fn write_settings(config_root: &PathBuf, settings: &AppSettings) {
+  let p = config_root.join("settings.json");
+  if let Ok(s) = serde_json::to_string_pretty(settings) {
+    let _ = std::fs::write(p, s);
+  }
+}
+
+fn is_dir_empty(p: &PathBuf) -> bool {
+  match std::fs::read_dir(p) {
+    Ok(mut it) => it.next().is_none(),
+    Err(_) => true,
+  }
+}
+
+fn copy_dir_all(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
+  std::fs::create_dir_all(to)?;
+  for entry in std::fs::read_dir(from)? {
+    let entry = entry?;
+    let ft = entry.file_type()?;
+    let src = entry.path();
+    let dst = to.join(entry.file_name());
+    if ft.is_dir() {
+      copy_dir_all(&src, &dst)?;
+    } else if ft.is_file() {
+      std::fs::create_dir_all(dst.parent().unwrap_or(to))?;
+      std::fs::copy(&src, &dst)?;
+    }
+  }
+  Ok(())
+}
+
+fn move_dir(from: &PathBuf, to: &PathBuf) -> io::Result<()> {
+  // Fast path: same volume rename.
+  if std::fs::rename(from, to).is_ok() {
+    return Ok(());
+  }
+  // Fallback: recursive copy + delete.
+  copy_dir_all(from, to)?;
+  std::fs::remove_dir_all(from)?;
+  Ok(())
+}
+
+fn apply_pending_migration(config_root: &PathBuf, settings: &mut AppSettings) -> Option<PathBuf> {
+  let mig = settings.storage.as_ref().and_then(|s| s.migration.as_ref())?;
+  let from = PathBuf::from(mig.from.clone());
+  let to = PathBuf::from(mig.to.clone());
+  if from == to {
+    // Nothing to do.
+    if let Some(st) = settings.storage.as_mut() {
+      st.migration = None;
+    }
+    write_settings(config_root, settings);
+    return None;
+  }
+
+  // If source doesn't exist, clear and continue.
+  if !from.exists() {
+    if let Some(st) = settings.storage.as_mut() {
+      st.migration = None;
+    }
+    write_settings(config_root, settings);
+    return None;
+  }
+
+  // If destination exists and is not empty, back it up before moving in.
+  if to.exists() && !is_dir_empty(&to) {
+    let ts = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .unwrap_or_else(|_| Duration::from_secs(0))
+      .as_secs();
+    let name = to
+      .file_name()
+      .and_then(|s| s.to_str())
+      .unwrap_or("data")
+      .to_string();
+    let backup = to
+      .parent()
+      .unwrap_or(config_root)
+      .join(format!("{}-backup-{}", name, ts));
+    let _ = std::fs::rename(&to, &backup);
+  }
+
+  if let Some(parent) = to.parent() {
+    let _ = std::fs::create_dir_all(parent);
+  }
+
+  match move_dir(&from, &to) {
+    Ok(()) => {
+      if let Some(st) = settings.storage.as_mut() {
+        st.migration = None;
+      }
+      write_settings(config_root, settings);
+      None
+    }
+    Err(_) => {
+      // Migration failed; keep using the old location for this run so the library isn't "missing".
+      Some(from)
+    }
   }
 }
 
@@ -378,7 +488,9 @@ fn main() {
       std::fs::create_dir_all(&config_root)?;
 
       let settings = read_settings(&config_root);
-      let data_dir = resolve_data_dir(&config_root, &settings);
+      let mut settings = settings;
+      let override_data_dir = apply_pending_migration(&config_root, &mut settings);
+      let data_dir = override_data_dir.unwrap_or_else(|| resolve_data_dir(&config_root, &settings));
       std::fs::create_dir_all(&data_dir)?;
 
       let child = spawn_next_server(&handle, port, &config_root, &data_dir, &settings)?;

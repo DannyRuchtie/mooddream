@@ -120,11 +120,8 @@ const MIN_ZOOM = 0.01;
 const MAX_ZOOM = 1.0;
 
 // Interaction tuning:
-// - When very zoomed out, clicking an image should "zoom in" (similar to Space focus-zoom).
 // - Double click should only open the fullscreen/lightbox view when reasonably zoomed in.
-const CLICK_TO_FOCUS_MAX_ZOOM = 0.18;
 const TAP_MAX_MOVE_PX = 6; // renderer-space px
-const SUPPRESS_DBLCLICK_AFTER_FOCUS_MS = 450;
 const FULLSCREEN_DBLCLICK_FIT_FACTOR = 0.75; // fraction of "fit zoom" considered "zoomed in"
 
 // When focusing an image via the command palette, zoom so the image occupies most of the viewport.
@@ -339,7 +336,6 @@ export function PixiWorkspace(props: {
     isHandle: boolean;
     shift: boolean;
   }>(null);
-  const lastFocusByClickAtMsRef = useRef<number>(-1);
 
   const viewAnimRef = useRef<null | {
     startMs: number;
@@ -1859,21 +1855,6 @@ void main()
         if (cand.button !== 0) return;
         if (cand.shift) return;
         if (!cand.objectId) return;
-
-        const world = worldRef.current;
-        if (!world) return;
-        const currentZoom = world.scale.x || 1;
-        if (currentZoom > CLICK_TO_FOCUS_MAX_ZOOM) return;
-
-        const o = objectsRef.current.find((x) => x.id === cand.objectId);
-        if (!o || o.type !== "image" || !o.asset_id) return;
-        const sp = spritesByObjectIdRef.current.get(cand.objectId);
-        if (!sp) return;
-
-        // Only focus-zoom on "tap" (no drag). This preserves existing drag/selection behavior.
-        if (focusZoomInOnSprite(sp)) {
-          lastFocusByClickAtMsRef.current = performance.now();
-        }
       });
 
       app.canvas.addEventListener("wheel", (e) => {
@@ -1936,8 +1917,6 @@ void main()
       app.canvas.addEventListener("dblclick", (e) => {
         // Avoid opening while a gesture is active (e.g. drag/resize).
         if (activeGestureRef.current) return;
-        const now = performance.now();
-        if (now - lastFocusByClickAtMsRef.current < SUPPRESS_DBLCLICK_AFTER_FOCUS_MS) return;
 
         const p = screenToRendererPoint(e.clientX, e.clientY);
         const hit = app.renderer.events.rootBoundary.hitTest(p.x, p.y) as any;
@@ -1958,9 +1937,8 @@ void main()
           : null;
         const openThreshold = fitZoom ? clamp(fitZoom * FULLSCREEN_DBLCLICK_FIT_FACTOR, 0.25, 0.75) : 0.35;
         if (currentZoom < openThreshold) {
-          if (sp && focusZoomInOnSprite(sp)) {
-            lastFocusByClickAtMsRef.current = now;
-          }
+          // Don't auto-zoom on double click when zoomed out.
+          // Zooming in is done explicitly via Space (focus toggle) to avoid surprising jumps.
           return;
         }
 

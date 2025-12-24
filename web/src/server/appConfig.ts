@@ -13,6 +13,13 @@ export const AppSettingsSchema = z.object({
     .object({
       mode: StorageMode.default("local"),
       icloudPath: z.string().min(1).optional(),
+      migration: z
+        .object({
+          from: z.string().min(1),
+          to: z.string().min(1),
+          requestedAt: z.string().min(1),
+        })
+        .optional(),
     })
     .default({ mode: "local" }),
   ai: z
@@ -49,6 +56,10 @@ export function defaultIcloudDir() {
     "com~apple~CloudDocs",
     "Moondream"
   );
+}
+
+export function defaultLocalDataDir() {
+  return path.join(configRootDir(), "data");
 }
 
 export function readAppSettings(): AppSettings {

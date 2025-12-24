@@ -1,6 +1,7 @@
 import {
   AppSettingsSchema,
   defaultIcloudDir,
+  defaultLocalDataDir,
   readAppSettings,
   writeAppSettings,
 } from "@/server/appConfig";
@@ -27,6 +28,14 @@ export async function PUT(req: Request) {
 
   const next = parsed.data;
 
+  const currentDataDir = ((process.env.MOONDREAM_DATA_DIR || "") || "").trim();
+  const targetDataDir =
+    next.storage.mode === "icloud"
+      ? ((next.storage.icloudPath || defaultIcloudDir() || "") || "").trim()
+      : defaultLocalDataDir();
+  const resolvedTarget = targetDataDir ? (await import("node:path")).resolve(targetDataDir) : "";
+  const resolvedCurrent = currentDataDir ? (await import("node:path")).resolve(currentDataDir) : "";
+
   // If switching to iCloud, ensure the folder exists so the user doesn't have to create it manually.
   if (next.storage.mode === "icloud") {
     const p = (next.storage.icloudPath || defaultIcloudDir() || "").trim();
@@ -38,6 +47,25 @@ export async function PUT(req: Request) {
     }
     const fs = await import("node:fs");
     fs.mkdirSync(p, { recursive: true });
+  }
+
+  // If the storage location changed, schedule a library migration for next launch.
+  // We do the actual move on desktop startup (before DB is opened) for SQLite safety.
+  if (resolvedCurrent && resolvedTarget && resolvedCurrent !== resolvedTarget) {
+    const fs = await import("node:fs");
+    const hasDb = fs.existsSync((await import("node:path")).join(resolvedCurrent, "moondream.sqlite3"));
+    const hasProjects = fs.existsSync((await import("node:path")).join(resolvedCurrent, "projects"));
+    if (hasDb || hasProjects) {
+      next.storage.migration = {
+        from: resolvedCurrent,
+        to: resolvedTarget,
+        requestedAt: new Date().toISOString(),
+      };
+    } else {
+      next.storage.migration = undefined;
+    }
+  } else {
+    next.storage.migration = undefined;
   }
 
   writeAppSettings(next);

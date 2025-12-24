@@ -247,3 +247,9 @@ flowchart LR
   W -->|HTTP| MS["Moondream Station (127.0.0.1:2020)"];
   W -->|optional HTTP| HF["Hugging Face Endpoint"];
 ```
+
+
+## Todo
+
+[] riple aspect ratio
+[] keyboard arrow navigation 

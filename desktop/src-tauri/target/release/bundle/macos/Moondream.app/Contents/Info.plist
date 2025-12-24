@@ -8,6 +8,8 @@
 	<string>Moondream</string>
 	<key>CFBundleExecutable</key>
 	<string>Moondream</string>
+	<key>CFBundleIconFile</key>
+	<string>icon.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.moondream.desktop</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -19,7 +21,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>20251224.081029</string>
+	<string>20251224.122112</string>
 	<key>CSResourcesFileMapped</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>

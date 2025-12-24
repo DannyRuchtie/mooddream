@@ -82,8 +82,8 @@ export default function SettingsClient() {
         <div className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
           <div className="text-sm font-medium">Storage</div>
           <div className="mt-1 text-xs text-zinc-500">
-            Default is local. iCloud sync is convenient but SQLite can misbehave if you open the app on two Macs at the
-            same time.
+            Default is local. Switching storage will move your library (DB + assets) on next app launch.
+            iCloud sync is convenient but SQLite can misbehave if you open the app on two Macs at the same time.
           </div>
 
           <div className="mt-4 space-y-2">
@@ -150,7 +150,7 @@ export default function SettingsClient() {
           {error ? <div className="mt-4 text-sm text-red-400">{error}</div> : null}
           {saved ? (
             <div className="mt-4 rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
-              Saved. Close and reopen the app to apply storage changes.
+              Saved. Close and reopen the app to apply storage changes (and move your library if you changed storage).
             </div>
           ) : null}
 
