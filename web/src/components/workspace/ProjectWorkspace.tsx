@@ -29,6 +29,7 @@ export function ProjectWorkspace(props: {
   initialAssets: AssetWithAi[];
   initialObjects: CanvasObjectRow[];
   initialView: ProjectViewRow | null;
+  initialSync?: { canvasRev: number; viewRev: number } | null;
 }) {
   const { project } = props;
   const router = useRouter();
@@ -79,6 +80,7 @@ export function ProjectWorkspace(props: {
         initialAssets={props.initialAssets}
         initialObjects={objects}
         initialView={props.initialView}
+        initialSync={props.initialSync ?? null}
         highlightOverlay={highlight}
         onObjectsChange={setObjects}
         onFocusRequest={(fn) => setFocusFn(() => fn)}

@@ -13,6 +13,14 @@ export type ProjectViewRow = {
   updated_at: string;
 };
 
+export type ProjectSyncRow = {
+  project_id: string;
+  canvas_rev: number;
+  view_rev: number;
+  canvas_updated_at: string;
+  view_updated_at: string;
+};
+
 export type AssetRow = {
   id: string;
   project_id: string;

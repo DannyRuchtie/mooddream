@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { getProject } from "@/server/db/projects";
-import { getCanvasObjects, replaceCanvasObjects } from "@/server/db/canvas";
+import { getCanvasObjects, getProjectSync, replaceCanvasObjects } from "@/server/db/canvas";
 
 export const runtime = "nodejs";
 
@@ -22,6 +22,7 @@ const CanvasObject = z.object({
 
 const SaveCanvasBody = z.object({
   objects: z.array(CanvasObject),
+  baseCanvasRev: z.number().int().min(0).optional(),
 });
 
 export async function GET(
@@ -33,7 +34,13 @@ export async function GET(
   if (!project) return Response.json({ error: "Not found" }, { status: 404 });
 
   const objects = getCanvasObjects(projectId);
-  return Response.json({ projectId, objects });
+  const sync = getProjectSync(projectId);
+  return Response.json({
+    projectId,
+    objects,
+    canvasRev: sync.canvas_rev,
+    canvasUpdatedAt: sync.canvas_updated_at,
+  });
 }
 
 export async function PUT(
@@ -50,6 +57,19 @@ export async function PUT(
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
 
+  const current = getProjectSync(projectId);
+  const base = parsed.data.baseCanvasRev;
+  if (typeof base === "number" && base !== current.canvas_rev) {
+    return Response.json(
+      {
+        error: "Conflict: canvas is newer on disk",
+        canvasRev: current.canvas_rev,
+        canvasUpdatedAt: current.canvas_updated_at,
+      },
+      { status: 409 }
+    );
+  }
+
   const normalized = parsed.data.objects.map((o) => ({
     ...o,
     asset_id: o.asset_id ?? null,
@@ -59,7 +79,12 @@ export async function PUT(
   }));
 
   replaceCanvasObjects({ projectId, objects: normalized });
-  return Response.json({ ok: true });
+  const next = getProjectSync(projectId);
+  return Response.json({
+    ok: true,
+    canvasRev: next.canvas_rev,
+    canvasUpdatedAt: next.canvas_updated_at,
+  });
 }
 
 

@@ -1,6 +1,6 @@
 import { getProject } from "@/server/db/projects";
 import { listAssets } from "@/server/db/assets";
-import { getCanvasObjects, getProjectView } from "@/server/db/canvas";
+import { getCanvasObjects, getProjectSync, getProjectView } from "@/server/db/canvas";
 import { setLastOpenedProjectId } from "@/server/db/appState";
 import { ProjectWorkspace } from "@/components/workspace/ProjectWorkspace";
 import type { Metadata } from "next";
@@ -36,6 +36,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
   const assets = listAssets({ projectId, limit: 200, offset: 0 });
   const objects = getCanvasObjects(projectId);
   const view = getProjectView(projectId);
+  const sync = getProjectSync(projectId);
 
   return (
     <ProjectWorkspace
@@ -43,6 +44,7 @@ export default async function ProjectPage(props: { params: Promise<{ projectId: 
       initialAssets={assets}
       initialObjects={objects}
       initialView={view}
+      initialSync={{ canvasRev: sync.canvas_rev, viewRev: sync.view_rev }}
     />
   );
 }

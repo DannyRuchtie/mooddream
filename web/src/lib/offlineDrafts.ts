@@ -7,6 +7,9 @@ export type ProjectDraft = {
   view: { world_x: number; world_y: number; zoom: number } | null;
   dirtyCanvas: boolean;
   dirtyView: boolean;
+  // Last server revisions we've successfully synced against.
+  serverCanvasRev?: number;
+  serverViewRev?: number;
 };
 
 const DB_NAME = "moondream";
@@ -90,6 +93,8 @@ function defaultDraft(projectId: string): ProjectDraft {
     view: null,
     dirtyCanvas: false,
     dirtyView: false,
+    serverCanvasRev: 0,
+    serverViewRev: 0,
   };
 }
 
@@ -106,6 +111,9 @@ function mergeDrafts(base: ProjectDraft, overlay: ProjectDraft): ProjectDraft {
     // If overlay doesn't have canvas/view yet, keep base dirty flags for those domains.
     dirtyCanvas: overlay.canvas === null ? base.dirtyCanvas : overlay.dirtyCanvas,
     dirtyView: overlay.view === null ? base.dirtyView : overlay.dirtyView,
+    serverCanvasRev:
+      typeof overlay.serverCanvasRev === "number" ? overlay.serverCanvasRev : base.serverCanvasRev ?? 0,
+    serverViewRev: typeof overlay.serverViewRev === "number" ? overlay.serverViewRev : base.serverViewRev ?? 0,
   };
 }
 

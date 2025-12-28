@@ -251,6 +251,7 @@ export function PixiWorkspace(props: {
   initialAssets: AssetWithAi[];
   initialObjects: CanvasObjectRow[];
   initialView?: { world_x: number; world_y: number; zoom: number } | null;
+  initialSync?: { canvasRev: number; viewRev: number } | null;
   highlightOverlay?: {
     assetId: string;
     term: string;
@@ -265,6 +266,7 @@ export function PixiWorkspace(props: {
   const initialObjects = props.initialObjects;
   const initialView = props.initialView ?? null;
   const onObjectsChange = props.onObjectsChange;
+  const initialSync = props.initialSync ?? null;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<PIXI.Application | null>(null);
@@ -426,6 +428,7 @@ export function PixiWorkspace(props: {
   const [assets, setAssets] = useState<AssetWithAi[]>(props.initialAssets);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dropError, setDropError] = useState<string | null>(null);
+  const [syncConflict, setSyncConflict] = useState<string | null>(null);
   const UNDO_DELETE_MAX = 10;
   type DeleteUndoEntry = {
     deletedCount: number;
@@ -453,6 +456,20 @@ export function PixiWorkspace(props: {
     dirtyView: false,
     syncing: false,
   }));
+
+  const serverCanvasRevRef = useRef<number>(initialSync?.canvasRev ?? 0);
+  const serverViewRevRef = useRef<number>(initialSync?.viewRev ?? 0);
+  // Avoid self-conflicts: coalesce writes so only one PUT is in-flight at a time.
+  const canvasPutInFlightRef = useRef<Promise<void> | null>(null);
+  const canvasPutPendingRef = useRef<CanvasObjectRow[] | null>(null);
+  const viewPutInFlightRef = useRef<Promise<void> | null>(null);
+  const viewPutPendingRef = useRef<{ world_x: number; world_y: number; zoom: number } | null>(null);
+  useEffect(() => {
+    serverCanvasRevRef.current = initialSync?.canvasRev ?? 0;
+    serverViewRevRef.current = initialSync?.viewRev ?? 0;
+    setSyncConflict(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   useEffect(() => {
     // Undo history should never span projects.
@@ -683,6 +700,8 @@ export function PixiWorkspace(props: {
             view: initialView,
             dirtyCanvas: false,
             dirtyView: false,
+            serverCanvasRev: serverCanvasRevRef.current,
+            serverViewRev: serverViewRevRef.current,
           }).catch(() => {});
           return;
         }
@@ -715,6 +734,10 @@ export function PixiWorkspace(props: {
             world.scale.set(clamp(z, MIN_ZOOM, MAX_ZOOM));
           }
         }
+
+        // Restore last known server revisions from the draft (if present).
+        if (typeof draft.serverCanvasRev === "number") serverCanvasRevRef.current = draft.serverCanvasRev;
+        if (typeof draft.serverViewRev === "number") serverViewRevRef.current = draft.serverViewRev;
       } catch {
         // ignore
       } finally {
@@ -755,14 +778,10 @@ export function PixiWorkspace(props: {
 
         if (dirtyCanvas && draft.canvas) {
           try {
-            const res = await fetch(`/api/projects/${projectId}/canvas`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ objects: draft.canvas }),
-            });
-            if (!res.ok) throw new Error(`canvas_sync_failed:${res.status}`);
+            await putCanvasCoalesced(draft.canvas);
             dirtyCanvas = false;
             await patchProjectDraft(projectId, { canvas: draft.canvas, dirtyCanvas: false }).catch(() => {});
+            await patchProjectDraft(projectId, { serverCanvasRev: serverCanvasRevRef.current }).catch(() => {});
           } catch {
             // keep dirtyCanvas=true
           }
@@ -770,14 +789,10 @@ export function PixiWorkspace(props: {
 
         if (dirtyView && draft.view) {
           try {
-            const res = await fetch(`/api/projects/${projectId}/view`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(draft.view),
-            });
-            if (!res.ok) throw new Error(`view_sync_failed:${res.status}`);
+            await putViewCoalesced(draft.view);
             dirtyView = false;
             await patchProjectDraft(projectId, { view: draft.view, dirtyView: false }).catch(() => {});
+            await patchProjectDraft(projectId, { serverViewRev: serverViewRevRef.current }).catch(() => {});
           } catch {
             // keep dirtyView=true
           }
@@ -825,6 +840,152 @@ export function PixiWorkspace(props: {
     }, 0);
   };
 
+  const clearSyncConflictSoon = () => {
+    window.setTimeout(() => setSyncConflict(null), 3500);
+  };
+
+  const syncCanvasFromServer = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/canvas`);
+      if (!res.ok) return;
+      const data = (await res.json().catch(() => null)) as
+        | { objects?: CanvasObjectRow[]; canvasRev?: number; canvasUpdatedAt?: string }
+        | null;
+      const objects = (data?.objects ?? []) as CanvasObjectRow[];
+      const rev = typeof data?.canvasRev === "number" ? data!.canvasRev : null;
+
+      setObjects(objects);
+      scheduleEmitObjectsChange(objects);
+      schedulePreviewSave();
+      setDirtyCanvas(false);
+      void patchProjectDraft(projectId, { canvas: objects, dirtyCanvas: false }).catch(() => {});
+      if (rev !== null) {
+        serverCanvasRevRef.current = rev;
+        void patchProjectDraft(projectId, { serverCanvasRev: rev }).catch(() => {});
+      }
+      setSyncConflict("Synced latest board from disk (iCloud).");
+      clearSyncConflictSoon();
+    } catch {
+      // ignore
+    }
+  };
+
+  const syncViewFromServer = async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/view`);
+      if (!res.ok) return;
+      const data = (await res.json().catch(() => null)) as
+        | { view?: { world_x: number; world_y: number; zoom: number } | null; viewRev?: number }
+        | null;
+      const view = (data?.view ?? null) as { world_x: number; world_y: number; zoom: number } | null;
+      const rev = typeof data?.viewRev === "number" ? data!.viewRev : null;
+      if (!view) return;
+
+      initialViewOverrideRef.current = view;
+      const world = worldRef.current;
+      if (world) {
+        world.position.set(view.world_x, view.world_y);
+        const z = Number.isFinite(view.zoom) ? view.zoom : 1;
+        world.scale.set(clamp(z, MIN_ZOOM, MAX_ZOOM));
+      }
+
+      setDirtyView(false);
+      void patchProjectDraft(projectId, { view, dirtyView: false }).catch(() => {});
+      if (rev !== null) {
+        serverViewRevRef.current = rev;
+        void patchProjectDraft(projectId, { serverViewRev: rev }).catch(() => {});
+      }
+      setSyncConflict("Synced latest view from disk (iCloud).");
+      clearSyncConflictSoon();
+    } catch {
+      // ignore
+    }
+  };
+
+  const putCanvasCoalesced = async (objects: CanvasObjectRow[]) => {
+    // If there's already an in-flight request, just remember the latest desired state.
+    if (canvasPutInFlightRef.current) {
+      canvasPutPendingRef.current = objects;
+      return canvasPutInFlightRef.current;
+    }
+
+    const p = (async () => {
+      const res = await fetch(`/api/projects/${projectId}/canvas`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objects, baseCanvasRev: serverCanvasRevRef.current ?? 0 }),
+      });
+      if (res.status === 409) {
+        setSyncConflict("Board is newer on iCloud. Reloading latest…");
+        await syncCanvasFromServer();
+        return;
+      }
+      if (!res.ok) throw new Error(`canvas_save_failed:${res.status}`);
+      const data = (await res.json().catch(() => null)) as { canvasRev?: number } | null;
+      if (data && typeof data.canvasRev === "number") {
+        serverCanvasRevRef.current = data.canvasRev;
+        void patchProjectDraft(projectId, { serverCanvasRev: serverCanvasRevRef.current }).catch(() => {});
+      }
+    })()
+      .catch(() => {
+        // Let callers decide how to mark dirty; keep silent here.
+      })
+      .finally(() => {
+        canvasPutInFlightRef.current = null;
+      });
+
+    canvasPutInFlightRef.current = p;
+    await p;
+
+    // If more updates came in while we were saving, send the latest now.
+    const pending = canvasPutPendingRef.current;
+    canvasPutPendingRef.current = null;
+    if (pending) {
+      await putCanvasCoalesced(pending);
+    }
+  };
+
+  const putViewCoalesced = async (view: { world_x: number; world_y: number; zoom: number }) => {
+    if (viewPutInFlightRef.current) {
+      viewPutPendingRef.current = view;
+      return viewPutInFlightRef.current;
+    }
+
+    const p = (async () => {
+      const res = await fetch(`/api/projects/${projectId}/view`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...view, baseViewRev: serverViewRevRef.current ?? 0 }),
+      });
+      if (res.status === 409) {
+        setSyncConflict("View is newer on iCloud. Reloading latest…");
+        await syncViewFromServer();
+        return;
+      }
+      if (!res.ok) throw new Error(`view_save_failed:${res.status}`);
+      const data = (await res.json().catch(() => null)) as { viewRev?: number } | null;
+      if (data && typeof data.viewRev === "number") {
+        serverViewRevRef.current = data.viewRev;
+        void patchProjectDraft(projectId, { serverViewRev: serverViewRevRef.current }).catch(() => {});
+      }
+    })()
+      .catch(() => {
+        // silent; callers manage dirty flags
+      })
+      .finally(() => {
+        viewPutInFlightRef.current = null;
+      });
+
+    viewPutInFlightRef.current = p;
+    await p;
+
+    const pending = viewPutPendingRef.current;
+    viewPutPendingRef.current = null;
+    if (pending) {
+      await putViewCoalesced(pending);
+    }
+  };
+
   const scheduleSave = (nextObjects: CanvasObjectRow[]) => {
     if (localCanvasDraftTimer.current) window.clearTimeout(localCanvasDraftTimer.current);
     localCanvasDraftTimer.current = window.setTimeout(() => {
@@ -835,12 +996,7 @@ export function PixiWorkspace(props: {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
       try {
-        const res = await fetch(`/api/projects/${props.projectId}/canvas`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ objects: nextObjects }),
-        });
-        if (!res.ok) throw new Error(`canvas_save_failed:${res.status}`);
+        await putCanvasCoalesced(nextObjects);
         void patchProjectDraft(projectId, { canvas: nextObjects, dirtyCanvas: false }).catch(() => {});
         setDirtyCanvas(false);
       } catch {
@@ -863,12 +1019,7 @@ export function PixiWorkspace(props: {
       saveTimer.current = null;
     }
     try {
-      const res = await fetch(`/api/projects/${props.projectId}/canvas`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ objects: nextObjects }),
-      });
-      if (!res.ok) throw new Error(`canvas_save_failed:${res.status}`);
+      await putCanvasCoalesced(nextObjects);
       void patchProjectDraft(projectId, { canvas: nextObjects, dirtyCanvas: false }).catch(() => {});
       setDirtyCanvas(false);
     } catch {
@@ -886,12 +1037,7 @@ export function PixiWorkspace(props: {
     if (viewSaveTimer.current) window.clearTimeout(viewSaveTimer.current);
     viewSaveTimer.current = window.setTimeout(async () => {
       try {
-        const res = await fetch(`/api/projects/${props.projectId}/view`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(view),
-        });
-        if (!res.ok) throw new Error(`view_save_failed:${res.status}`);
+        await putViewCoalesced(view);
         void patchProjectDraft(projectId, { view, dirtyView: false }).catch(() => {});
         setDirtyView(false);
       } catch {
@@ -3228,6 +3374,11 @@ void main()
       {dropError ? (
         <div className="pointer-events-none absolute left-1/2 top-10 -translate-x-1/2 rounded-lg border border-red-900/50 bg-red-950/60 px-3 py-2 text-xs text-red-200">
           {dropError}
+        </div>
+      ) : null}
+      {syncConflict ? (
+        <div className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 rounded-lg border border-amber-900/40 bg-amber-950/35 px-3 py-2 text-xs text-amber-200">
+          {syncConflict}
         </div>
       ) : null}
       {lightboxAssetId && assetById.get(lightboxAssetId) ? (

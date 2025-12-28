@@ -134,6 +134,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS assets_project_sha256_uq
 CREATE INDEX IF NOT EXISTS assets_deleted_at_idx ON assets(deleted_at);
 `;
 
+const MIGRATION_006 = `PRAGMA foreign_keys = ON;
+
+-- Track per-project revision counters so clients can detect stale writes (helps multi-device + iCloud scenarios).
+CREATE TABLE IF NOT EXISTS project_sync (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  canvas_rev INTEGER NOT NULL DEFAULT 0,
+  view_rev INTEGER NOT NULL DEFAULT 0,
+  canvas_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  view_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
 export function ensureMigrations(db: Database) {
   db.pragma("foreign_keys = ON");
 
@@ -201,6 +213,19 @@ export function ensureMigrations(db: Database) {
     try {
       db.exec(sql);
       db.exec("PRAGMA user_version = 5");
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  if (current < 6) {
+    const sql = MIGRATION_006;
+    db.exec("BEGIN");
+    try {
+      db.exec(sql);
+      db.exec("PRAGMA user_version = 6");
       db.exec("COMMIT");
     } catch (err) {
       db.exec("ROLLBACK");

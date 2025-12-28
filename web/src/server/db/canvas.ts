@@ -1,6 +1,34 @@
 import type { CanvasObjectRow } from "./types";
 import { getDb } from "./db";
-import type { ProjectViewRow } from "./types";
+import type { ProjectSyncRow, ProjectViewRow } from "./types";
+
+export function getProjectSync(projectId: string): ProjectSyncRow {
+  const db = getDb();
+  const row =
+    (db
+      .prepare("SELECT * FROM project_sync WHERE project_id = ?")
+      .get(projectId) as ProjectSyncRow | undefined) ?? null;
+  if (row) return row;
+
+  // Ensure a row exists so callers have stable defaults.
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO project_sync (project_id, canvas_rev, view_rev, canvas_updated_at, view_updated_at)
+     VALUES (?, 0, 0, ?, ?)
+     ON CONFLICT(project_id) DO NOTHING`
+  ).run(projectId, now, now);
+  return (
+    (db
+      .prepare("SELECT * FROM project_sync WHERE project_id = ?")
+      .get(projectId) as ProjectSyncRow | undefined) ?? {
+      project_id: projectId,
+      canvas_rev: 0,
+      view_rev: 0,
+      canvas_updated_at: now,
+      view_updated_at: now,
+    }
+  );
+}
 
 export function getCanvasObjects(projectId: string): CanvasObjectRow[] {
   const db = getDb();
@@ -33,6 +61,13 @@ export function replaceCanvasObjects(args: {
       width, height, z_index, props_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
+  const bump = db.prepare(
+    `INSERT INTO project_sync (project_id, canvas_rev, view_rev, canvas_updated_at, view_updated_at)
+     VALUES (?, 1, 0, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET
+       canvas_rev = canvas_rev + 1,
+       canvas_updated_at = excluded.canvas_updated_at`
+  );
 
   const tx = db.transaction(() => {
     del.run(args.projectId);
@@ -55,6 +90,8 @@ export function replaceCanvasObjects(args: {
         now
       );
     }
+    // Keep a lightweight revision counter for conflict detection.
+    bump.run(args.projectId, now, now);
   });
   tx();
 }
@@ -76,7 +113,7 @@ export function upsertProjectView(args: {
 }) {
   const db = getDb();
   const now = new Date().toISOString();
-  db.prepare(
+  const upsert = db.prepare(
     `INSERT INTO project_view (project_id, world_x, world_y, zoom, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(project_id) DO UPDATE SET
@@ -84,7 +121,19 @@ export function upsertProjectView(args: {
        world_y=excluded.world_y,
        zoom=excluded.zoom,
        updated_at=excluded.updated_at`
-  ).run(args.projectId, args.world_x, args.world_y, args.zoom, now);
+  );
+  const bump = db.prepare(
+    `INSERT INTO project_sync (project_id, canvas_rev, view_rev, canvas_updated_at, view_updated_at)
+     VALUES (?, 0, 1, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET
+       view_rev = view_rev + 1,
+       view_updated_at = excluded.view_updated_at`
+  );
+  const tx = db.transaction(() => {
+    upsert.run(args.projectId, args.world_x, args.world_y, args.zoom, now);
+    bump.run(args.projectId, now, now);
+  });
+  tx();
 }
 
 
