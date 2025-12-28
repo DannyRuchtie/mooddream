@@ -1,0 +1,22 @@
+{
+  "/api/health/route": "/api/health",
+  "/_not-found/page": "/_not-found",
+  "/favicon.ico/route": "/favicon.ico",
+  "/api/assets/[assetId]/route": "/api/assets/[assetId]",
+  "/api/projects/[projectId]/canvas/route": "/api/projects/[projectId]/canvas",
+  "/api/projects/[projectId]/preview/route": "/api/projects/[projectId]/preview",
+  "/api/projects/[projectId]/assets/route": "/api/projects/[projectId]/assets",
+  "/api/projects/[projectId]/ai/retry/route": "/api/projects/[projectId]/ai/retry",
+  "/api/projects/[projectId]/assets/[assetId]/segments/route": "/api/projects/[projectId]/assets/[assetId]/segments",
+  "/api/projects/[projectId]/view/route": "/api/projects/[projectId]/view",
+  "/api/projects/[projectId]/assets/search/route": "/api/projects/[projectId]/assets/search",
+  "/api/settings/route": "/api/settings",
+  "/api/projects/route": "/api/projects",
+  "/files/projects/[projectId]/preview/route": "/files/projects/[projectId]/preview",
+  "/api/projects/[projectId]/route": "/api/projects/[projectId]",
+  "/files/projects/[projectId]/thumbs/[filename]/route": "/files/projects/[projectId]/thumbs/[filename]",
+  "/files/projects/[projectId]/assets/[filename]/route": "/files/projects/[projectId]/assets/[filename]",
+  "/page": "/",
+  "/projects/[projectId]/page": "/projects/[projectId]",
+  "/settings/page": "/settings"
+}

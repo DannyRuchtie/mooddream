@@ -137,6 +137,14 @@ const FOCUS_FIT_SCREEN_FRACTION = 0.88;
 // In that case, zoom out just enough so the entire item is visible with a small margin.
 const NAVIGATE_FIT_SCREEN_FRACTION = 0.96;
 
+// Ripple tuning:
+// - Default ripple is subtle so the canvas doesn't feel "wobbly".
+// - Drop ripple is a bit stronger so the effect is readable immediately after a drop.
+const RIPPLE_DEFAULT_AMPLITUDE = 0.0032; // was 0.0026
+const RIPPLE_DEFAULT_DURATION_SEC = 2.75; // was 1.85
+const DROP_RIPPLE_AMPLITUDE = 0.0046;
+const DROP_RIPPLE_DURATION_SEC = 3.4; // longer so the effect lingers after zoom-in
+
 function fitZoomForSprite(
   sp: PIXI.Sprite,
   viewportW: number,
@@ -538,7 +546,7 @@ export function PixiWorkspace(props: {
   const triggerRippleAtRendererPoint = (
     rx: number,
     ry: number,
-    opts?: { shapeAspect?: number; shapeRotation?: number }
+    opts?: { shapeAspect?: number; shapeRotation?: number; amplitude?: number; durationSec?: number }
   ) => {
     const app = appRef.current;
     const worldRoot = worldRootRef.current;
@@ -554,6 +562,14 @@ export function PixiWorkspace(props: {
     ripple.uniforms.uniforms.uTime = 0;
     ripple.uniforms.uniforms.uCenter.set(x01, y01);
     ripple.uniforms.uniforms.uAspect = app.renderer.width / Math.max(1, app.renderer.height);
+    // Always reset per-trigger so a strong drop ripple doesn't "stick" for later triggers.
+    const amp = typeof opts?.amplitude === "number" && Number.isFinite(opts.amplitude) ? opts.amplitude : RIPPLE_DEFAULT_AMPLITUDE;
+    const dur =
+      typeof opts?.durationSec === "number" && Number.isFinite(opts.durationSec)
+        ? opts.durationSec
+        : RIPPLE_DEFAULT_DURATION_SEC;
+    ripple.uniforms.uniforms.uAmplitude = clamp(amp, 0.0005, 0.02);
+    ripple.uniforms.uniforms.uDuration = clamp(dur, 0.25, 10);
     ripple.uniforms.uniforms.uShapeAspect = clamp(Number(opts?.shapeAspect ?? 1) || 1, 0.05, 20);
     ripple.uniforms.uniforms.uShapeRotation = Number(opts?.shapeRotation ?? 0) || 0;
 
@@ -608,7 +624,7 @@ export function PixiWorkspace(props: {
 
     const overlayLayer = overlaySpritesLayerRef.current;
     if (overlayLayer) {
-      // Lift all newly dropped items above the ripple overlay (so ripple is underneath them).
+      // Lift dropped items above the ripple overlay so the card stays crisp/in-front of the ripple.
       for (const id of pending.objectIds) {
         const sp = spritesByObjectIdRef.current.get(id);
         if (!sp) continue;
@@ -623,7 +639,12 @@ export function PixiWorkspace(props: {
     const app = appRef.current;
     const cx = (app?.renderer?.width ?? 0) / 2;
     const cy = (app?.renderer?.height ?? 0) / 2;
-    triggerRippleAtRendererPoint(cx, cy, { shapeAspect: w / h, shapeRotation: 0 });
+    triggerRippleAtRendererPoint(cx, cy, {
+      shapeAspect: w / h,
+      shapeRotation: 0,
+      amplitude: DROP_RIPPLE_AMPLITUDE,
+      durationSec: DROP_RIPPLE_DURATION_SEC,
+    });
     pendingDropRippleRef.current = null;
   };
 
@@ -1835,13 +1856,24 @@ void main()
     uv2_01 = clamp(uv2_01, vec2(0.0), vec2(1.0));
     vec2 uv2 = uv2_01 * uvMax;
 
-    finalColor = texture(uTexture, uv2);
+    // Composite over the workspace background so the ripple remains visible even in "empty" regions
+    // (important when the dropped card itself is rendered above the ripple).
+    vec4 tex = texture(uTexture, uv2);
+    vec3 bg = vec3(0.039215686, 0.039215686, 0.039215686); // #0a0a0a
+    vec3 rgb = mix(bg, tex.rgb, tex.a);
+
+    // Add a subtle luminance ripple mostly to background/empty areas (avoid over-wobbling images).
+    float bgMask = clamp(1.0 - tex.a, 0.0, 1.0);
+    float ring = clamp(abs(hClamped), 0.0, 1.0) * timeFade * distFade * bgMask;
+    rgb += ring * 0.11;
+
+    finalColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }`;
 
       const rippleUniforms = new PIXI.UniformGroup({
         uTime: { value: 0, type: "f32" },
         uCenter: { value: new PIXI.Point(0.5, 0.5), type: "vec2<f32>" },
-        uAmplitude: { value: 0.0026, type: "f32" },
+        uAmplitude: { value: RIPPLE_DEFAULT_AMPLITUDE, type: "f32" },
         uFrequency: { value: 28.0, type: "f32" },
         uSpeed: { value: 0.36, type: "f32" },
         uWidth: { value: 0.18, type: "f32" },
@@ -1849,7 +1881,7 @@ void main()
         uAspect: { value: 1.0, type: "f32" },
         uShapeAspect: { value: 1.0, type: "f32" },
         uShapeRotation: { value: 0.0, type: "f32" },
-        uDuration: { value: 1.85, type: "f32" },
+        uDuration: { value: RIPPLE_DEFAULT_DURATION_SEC, type: "f32" },
       }) as unknown as RippleUniformGroup;
 
       const rippleFilter = new PIXI.Filter({

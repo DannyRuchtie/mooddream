@@ -409,6 +409,67 @@ fn main() {
   let reset_zoom = CustomMenuItem::new("reset_zoom".to_string(), "Reset Zoom (10%)").accelerator("CmdOrCtrl+0");
   let focus_toggle = CustomMenuItem::new("focus_toggle".to_string(), "Focus Toggle").accelerator("Space");
 
+  // ---------------------------------------------------------------------------
+  // Shortcut reference menu
+  //
+  // Goal: make *all* in-app shortcuts discoverable from the menu bar without
+  // changing existing behavior or stealing normal typing input.
+  //
+  // We keep these items disabled so they don't register/override native menu
+  // accelerators. They are purely a "cheat sheet".
+  // ---------------------------------------------------------------------------
+
+  // Global / app-wide
+  let sc_command_palette = CustomMenuItem::new("sc_command_palette".to_string(), "Command Palette")
+    .accelerator("CmdOrCtrl+K")
+    .disabled();
+  let sc_find_assets_mod = CustomMenuItem::new("sc_find_assets_mod".to_string(), "Find Assets / Search")
+    .accelerator("CmdOrCtrl+F")
+    .disabled();
+  let sc_find_assets_plain = CustomMenuItem::new("sc_find_assets_plain".to_string(), "Find Assets / Search")
+    // Plain "F" is handled by the web UI when not typing.
+    .accelerator("F")
+    .disabled();
+  let sc_close_escape = CustomMenuItem::new("sc_close_escape".to_string(), "Close / Cancel / Dismiss")
+    .accelerator("Esc")
+    .disabled();
+
+  // Project / navigation
+  let sc_project_settings_mod = CustomMenuItem::new("sc_project_settings_mod".to_string(), "Project Settings…")
+    .accelerator("CmdOrCtrl+.")
+    .disabled();
+  // "." alone is handled by the web UI (project context); we keep it as label text to avoid
+  // any platform-specific accelerator parsing quirks for punctuation.
+  let sc_project_settings_plain =
+    CustomMenuItem::new("sc_project_settings_plain".to_string(), "Project Settings… (.)").disabled();
+  let sc_settings_mod = CustomMenuItem::new("sc_settings_mod".to_string(), "Settings")
+    .accelerator("CmdOrCtrl+,")
+    .disabled();
+
+  // Canvas
+  let sc_canvas_minimap = CustomMenuItem::new("sc_canvas_minimap".to_string(), "Toggle Minimap")
+    .accelerator("M")
+    .disabled();
+  let sc_canvas_reset_zoom_plain =
+    CustomMenuItem::new("sc_canvas_reset_zoom_plain".to_string(), "Reset Zoom (10%)").accelerator("0").disabled();
+  let sc_canvas_reset_zoom_mod = CustomMenuItem::new("sc_canvas_reset_zoom_mod".to_string(), "Reset Zoom (10%)")
+    .accelerator("CmdOrCtrl+0")
+    .disabled();
+  let sc_canvas_focus = CustomMenuItem::new("sc_canvas_focus".to_string(), "Focus Toggle")
+    .accelerator("Space")
+    .disabled();
+  let sc_canvas_undo_delete = CustomMenuItem::new("sc_canvas_undo_delete".to_string(), "Undo Delete Selection")
+    .accelerator("CmdOrCtrl+Z")
+    .disabled();
+  let sc_canvas_delete = CustomMenuItem::new("sc_canvas_delete".to_string(), "Delete Selection (Backspace/Delete)")
+    .disabled();
+  // Arrow-key navigation is handled by the web UI; display as text so we don't bind arrow keys globally.
+  let sc_canvas_arrows =
+    CustomMenuItem::new("sc_canvas_arrows".to_string(), "Navigate Selection (← ↑ → ↓)").disabled();
+  // Dev/testing shortcut (kept visible because it exists in the app, but clearly labeled).
+  let sc_canvas_ripple_test =
+    CustomMenuItem::new("sc_canvas_ripple_test".to_string(), "Ripple Test (dev) (R)").disabled();
+
   let app_menu = Menu::new()
     .add_native_item(MenuItem::About("Moondream".to_string(), AboutMetadata::default()))
     .add_native_item(MenuItem::Separator)
@@ -449,12 +510,43 @@ fn main() {
     .add_native_item(MenuItem::Minimize)
     .add_native_item(MenuItem::Zoom);
 
+  let shortcuts_global_menu = Menu::new()
+    .add_item(sc_command_palette.clone())
+    .add_item(sc_find_assets_mod.clone())
+    .add_item(sc_find_assets_plain.clone())
+    .add_native_item(MenuItem::Separator)
+    .add_item(sc_close_escape.clone());
+
+  let shortcuts_project_menu = Menu::new()
+    .add_item(sc_project_settings_mod.clone())
+    .add_item(sc_project_settings_plain.clone())
+    .add_native_item(MenuItem::Separator)
+    .add_item(sc_settings_mod.clone());
+
+  let shortcuts_canvas_menu = Menu::new()
+    .add_item(sc_canvas_minimap.clone())
+    .add_item(sc_canvas_reset_zoom_plain.clone())
+    .add_item(sc_canvas_reset_zoom_mod.clone())
+    .add_item(sc_canvas_focus.clone())
+    .add_native_item(MenuItem::Separator)
+    .add_item(sc_canvas_arrows.clone())
+    .add_item(sc_canvas_delete.clone())
+    .add_item(sc_canvas_undo_delete.clone())
+    .add_native_item(MenuItem::Separator)
+    .add_item(sc_canvas_ripple_test.clone());
+
+  let shortcuts_menu = Menu::new()
+    .add_submenu(Submenu::new("Global", shortcuts_global_menu))
+    .add_submenu(Submenu::new("Project", shortcuts_project_menu))
+    .add_submenu(Submenu::new("Canvas", shortcuts_canvas_menu));
+
   // macOS requires submenus for top-level items.
   let menu = Menu::new()
     .add_submenu(Submenu::new("Moondream", app_menu))
     .add_submenu(Submenu::new("File", file_menu))
     .add_submenu(Submenu::new("Edit", edit_menu))
     .add_submenu(Submenu::new("View", view_menu))
+    .add_submenu(Submenu::new("Shortcuts", shortcuts_menu))
     .add_submenu(Submenu::new("Window", window_menu));
 
   tauri::Builder::default()
