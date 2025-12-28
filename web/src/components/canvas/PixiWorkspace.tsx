@@ -573,6 +573,39 @@ export function PixiWorkspace(props: {
     const h = Number(tex?.orig?.height ?? 0);
     if (!(w > 0 && h > 0)) return;
     pending.fired = true;
+
+    // Zoom to fit the newly dropped card (same behavior as cmdk focus):
+    // compute a fit zoom for the sprite, then center it in the viewport.
+    {
+      const app = appRef.current;
+      const world = worldRef.current;
+      const sp = spritesByObjectIdRef.current.get(objectId) as PIXI.Sprite | undefined;
+      if (app && world && sp) {
+        const nextZoom =
+          fitZoomForSprite(sp, app.renderer.width, app.renderer.height, FOCUS_FIT_SCREEN_FRACTION) ?? world.scale.x;
+        const p = sp.position;
+        const endX = app.renderer.width / 2 - p.x * nextZoom;
+        const endY = app.renderer.height / 2 - p.y * nextZoom;
+        cancelViewAnimation();
+        animateViewTo(
+          { x: endX, y: endY, zoom: nextZoom },
+          {
+            durationMs: 360,
+            onComplete: () => {
+              const w2 = worldRef.current;
+              if (!w2) return;
+              scheduleViewSave({
+                world_x: w2.position.x,
+                world_y: w2.position.y,
+                zoom: w2.scale.x,
+              });
+              schedulePreviewSave();
+            },
+          }
+        );
+      }
+    }
+
     const overlayLayer = overlaySpritesLayerRef.current;
     if (overlayLayer) {
       // Lift all newly dropped items above the ripple overlay (so ripple is underneath them).
@@ -590,7 +623,7 @@ export function PixiWorkspace(props: {
     const app = appRef.current;
     const cx = (app?.renderer?.width ?? 0) / 2;
     const cy = (app?.renderer?.height ?? 0) / 2;
-    triggerRippleAtRendererPoint(cx, cy, {});
+    triggerRippleAtRendererPoint(cx, cy, { shapeAspect: w / h, shapeRotation: 0 });
     pendingDropRippleRef.current = null;
   };
 
