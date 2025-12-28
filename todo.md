@@ -1,0 +1,4 @@
+- [x] Undo
+- [ ] multiselect border
+- [ ] time stamp local sync 
+- [ ] theme color  

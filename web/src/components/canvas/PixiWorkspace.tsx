@@ -1959,7 +1959,10 @@ void main()
             else set.add(objectId);
             nextSel = Array.from(set);
           } else {
-            nextSel = [objectId];
+            // If multiple items are selected and the user clicks one of the selected items,
+            // keep the multi-selection so dragging moves the whole group (Figma-like).
+            const isInCurrent = currentSel.includes(objectId);
+            nextSel = isInCurrent && currentSel.length > 1 ? currentSel : [objectId];
           }
           setSelectedIds(nextSel);
 
@@ -1971,17 +1974,14 @@ void main()
             return next;
           });
 
-          // Move all selected items (or just this one if none selected yet).
-          const ids = selectedIdsRef.current;
-          const moveIds =
-            ids && ids.length > 0 && (shift ? true : ids.includes(objectId))
-              ? ids.includes(objectId)
-                ? ids
-                : [objectId]
-              : [objectId];
-          activeGestureRef.current = { kind: "move", objectIds: nextSel.length ? nextSel : moveIds, last };
+          // Shift-click is for selection toggle only; don't start a drag gesture.
+          if (shift) return;
+
+          // Drag moves the current selection.
+          if (!nextSel.length) return;
+          activeGestureRef.current = { kind: "move", objectIds: nextSel, last };
           // Lift the "card" shadow while dragging (animated smoothly in the ticker).
-          setShadowLiftTarget(nextSel.length ? nextSel : moveIds, 1);
+          setShadowLiftTarget(nextSel, 1);
           return;
         }
 
@@ -2419,20 +2419,20 @@ void main()
           const p4 = rot(-hw, hh);
 
           // Glow stroke
-          g.lineStyle(glowW, THEME_ACCENT, 0.22);
           g.moveTo(p1.x, p1.y);
           g.lineTo(p2.x, p2.y);
           g.lineTo(p3.x, p3.y);
           g.lineTo(p4.x, p4.y);
           g.lineTo(p1.x, p1.y);
+          g.stroke({ width: glowW, color: 0x60a5fa, alpha: 0.22 });
 
           // Main stroke
-          g.lineStyle(strokeW, THEME_ACCENT, 0.98);
           g.moveTo(p1.x, p1.y);
           g.lineTo(p2.x, p2.y);
           g.lineTo(p3.x, p3.y);
           g.lineTo(p4.x, p4.y);
           g.lineTo(p1.x, p1.y);
+          g.stroke({ width: strokeW, color: 0x60a5fa, alpha: 0.98 });
         }
       };
 
