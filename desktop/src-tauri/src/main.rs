@@ -20,6 +20,7 @@ struct ServerState {
   port: Mutex<Option<u16>>,
   child: Mutex<Option<Child>>,
   worker: Mutex<Option<Child>>,
+  station: Mutex<Option<Child>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
@@ -60,6 +61,184 @@ struct ServerInfo {
 #[tauri::command]
 fn server_port(state: tauri::State<ServerState>) -> Option<u16> {
   *state.port.lock().unwrap()
+}
+
+#[derive(Clone, Serialize)]
+struct StationStatus {
+  endpoint: String,
+  host: String,
+  port: u16,
+  reachable: bool,
+  installed: bool,
+  started_by_app: bool,
+  log_path: String,
+}
+
+fn parse_host_port(endpoint: &str) -> Option<(String, u16)> {
+  let mut s = endpoint.trim().to_string();
+  if s.is_empty() {
+    return None;
+  }
+  if let Some(idx) = s.find("://") {
+    s = s[(idx + 3)..].to_string();
+  }
+  // Strip credentials if present.
+  if let Some(at) = s.find('@') {
+    s = s[(at + 1)..].to_string();
+  }
+  // Cut path/query/fragment.
+  for sep in ['/', '?', '#'] {
+    if let Some(i) = s.find(sep) {
+      s = s[..i].to_string();
+      break;
+    }
+  }
+  if s.is_empty() {
+    return None;
+  }
+  // host[:port]
+  if let Some(colon) = s.rfind(':') {
+    let host = s[..colon].to_string();
+    let port_s = s[(colon + 1)..].to_string();
+    if let Ok(p) = port_s.parse::<u16>() {
+      return Some((host, p));
+    }
+  }
+  // Default (Station default varies by install; we standardize our local default).
+  Some((s, 2023))
+}
+
+fn tcp_reachable(host: &str, port: u16) -> bool {
+  TcpStream::connect(format!("{}:{}", host, port)).is_ok()
+}
+
+fn station_bin() -> String {
+  let env = std::env::var("MOONDREAM_STATION_BIN").unwrap_or_else(|_| "".to_string());
+  let env = env.trim().to_string();
+  if !env.is_empty() {
+    return env;
+  }
+  "moondream-station".to_string()
+}
+
+#[tauri::command]
+fn station_status(
+  app: tauri::AppHandle,
+  state: tauri::State<ServerState>,
+  endpoint: Option<String>,
+) -> StationStatus {
+  let endpoint = endpoint
+    .unwrap_or_else(|| "http://localhost:2023/v1".to_string())
+    .trim()
+    .to_string();
+  let (host, port) = parse_host_port(&endpoint).unwrap_or_else(|| ("localhost".to_string(), 2023));
+  let reachable = tcp_reachable(&host, port);
+  let started_by_app = state.station.lock().unwrap().is_some();
+  let installed = Command::new(station_bin())
+    .arg("--help")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .is_ok();
+
+  let config_root = app
+    .path_resolver()
+    .app_data_dir()
+    .map(|p| p.to_string_lossy().to_string())
+    .unwrap_or_else(|| "".to_string());
+  let log_path = if config_root.is_empty() {
+    "".to_string()
+  } else {
+    format!("{}/logs/moondream-station.log", config_root)
+  };
+
+  StationStatus {
+    endpoint,
+    host,
+    port,
+    reachable,
+    installed,
+    started_by_app,
+    log_path,
+  }
+}
+
+#[tauri::command]
+fn station_start(
+  app: tauri::AppHandle,
+  state: tauri::State<ServerState>,
+  endpoint: Option<String>,
+) -> Result<StationStatus, String> {
+  let endpoint = endpoint
+    .unwrap_or_else(|| "http://localhost:2023/v1".to_string())
+    .trim()
+    .to_string();
+  let (host, port) = parse_host_port(&endpoint).unwrap_or_else(|| ("localhost".to_string(), 2023));
+
+  // Only support local station auto-start.
+  let host_lc = host.to_lowercase();
+  if host_lc != "localhost" && host_lc != "127.0.0.1" && host_lc != "::1" {
+    return Err("Auto-start only supports localhost endpoints. Please start Station manually.".to_string());
+  }
+
+  if tcp_reachable(&host, port) {
+    return Ok(station_status(app, state, Some(endpoint)));
+  }
+
+  // Ensure log dir exists
+  let config_root = app
+    .path_resolver()
+    .app_data_dir()
+    .ok_or_else(|| "Missing app_data_dir".to_string())?;
+  std::fs::create_dir_all(&config_root).map_err(|e| e.to_string())?;
+  let log_dir = config_root.join("logs");
+  std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+  let log_path = log_dir.join("moondream-station.log");
+  let out = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&log_path)
+    .map_err(|e| e.to_string())?;
+  let err = out.try_clone().map_err(|e| e.to_string())?;
+
+  // Kill previous station child if we started one.
+  if let Some(mut prev) = state.station.lock().unwrap().take() {
+    let _ = prev.kill();
+  }
+
+  let bin = station_bin();
+  let mut cmd = Command::new(bin);
+  cmd
+    .arg("start")
+    .arg(port.to_string())
+    .stdin(Stdio::null())
+    .stdout(Stdio::from(out))
+    .stderr(Stdio::from(err));
+
+  let child = cmd.spawn().map_err(|e| {
+    format!(
+      "Failed to start Moondream Station. Is it installed? Try: python3 -m pip install --user moondream-station. ({})",
+      e
+    )
+  })?;
+  *state.station.lock().unwrap() = Some(child);
+
+  // Wait briefly for port to open.
+  let ok = http_get_200(&host, port, "/", Duration::from_secs(6)) || tcp_reachable(&host, port);
+  if !ok {
+    // Keep it running (it might still be starting), but let the UI show current status.
+  }
+
+  Ok(station_status(app, state, Some(endpoint)))
+}
+
+#[tauri::command]
+fn station_stop(app: tauri::AppHandle, state: tauri::State<ServerState>) -> StationStatus {
+  if let Some(mut c) = state.station.lock().unwrap().take() {
+    let _ = c.kill();
+  }
+  station_status(app, state, None)
 }
 
 fn pick_free_port() -> u16 {
@@ -591,6 +770,7 @@ fn main() {
       port: Mutex::new(None),
       child: Mutex::new(None),
       worker: Mutex::new(None),
+      station: Mutex::new(None),
     })
     .menu(menu)
     .on_menu_event(|event| {
@@ -642,7 +822,7 @@ fn main() {
         _ => {}
       }
     })
-    .invoke_handler(tauri::generate_handler![server_port])
+    .invoke_handler(tauri::generate_handler![server_port, station_status, station_start, station_stop])
     .setup(|app| {
       // In dev, Tauri points at the running Next dev server (http://localhost:3000).
       if cfg!(debug_assertions) {
@@ -717,6 +897,9 @@ fn main() {
         }
         if let Some(mut worker) = state.worker.lock().unwrap().take() {
           let _ = worker.kill();
+        }
+        if let Some(mut station) = state.station.lock().unwrap().take() {
+          let _ = station.kill();
         }
 
         let _ = event.window().close();

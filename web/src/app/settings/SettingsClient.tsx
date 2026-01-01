@@ -32,6 +32,16 @@ type AiProgress = {
   };
 };
 
+type StationStatus = {
+  endpoint: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  installed: boolean;
+  startedByApp: boolean;
+  logPath: string;
+};
+
 export default function SettingsClient() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -50,6 +60,9 @@ export default function SettingsClient() {
   const [retryBusy, setRetryBusy] = useState(false);
 
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const [station, setStation] = useState<StationStatus | null>(null);
+  const [stationBusy, setStationBusy] = useState(false);
+  const [stationErr, setStationErr] = useState<string | null>(null);
 
   const [settings, setSettings] = useState<Settings>({
     storage: { mode: "local" },
@@ -103,6 +116,45 @@ export default function SettingsClient() {
       cancelled = true;
     };
   }, []);
+
+  const tauriInvoke = async <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+    const w = window as any;
+    if (!w?.__TAURI__?.invoke) throw new Error("Tauri API not available (not running in desktop app).");
+    return (await w.__TAURI__.invoke(cmd, args ?? {})) as T;
+  };
+
+  // Desktop-only: Moondream Station status (auto-refresh).
+  useEffect(() => {
+    const w = window as any;
+    if (!w?.__TAURI__?.invoke) return;
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const tick = async () => {
+      try {
+        const endpoint =
+          settings.ai.provider === "local_station"
+            ? (settings.ai.endpoint?.trim() || defaults.moondreamEndpoint)
+            : defaults.moondreamEndpoint;
+        const st = await tauriInvoke<StationStatus>("station_status", { endpoint });
+        if (cancelled) return;
+        setStation(st);
+      } catch {
+        // ignore (desktop only)
+      } finally {
+        if (cancelled) return;
+        timer = window.setTimeout(tick, 2500);
+      }
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.ai.provider, settings.ai.endpoint, defaults.moondreamEndpoint]);
 
   useEffect(() => {
     let cancelled = false;
@@ -549,6 +601,97 @@ export default function SettingsClient() {
                 </details>
               ) : null}
             </div>
+
+            {(window as any)?.__TAURI__?.invoke ? (
+              <div className="mt-4 rounded-lg border border-zinc-900 bg-zinc-950 px-3 py-3">
+                <div className="text-xs font-medium text-zinc-200">Moondream Station</div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  If you normally run Station from Terminal, the desktop app can start it for you.
+                </div>
+
+                <div className="mt-2 text-xs text-zinc-500">
+                  Endpoint:{" "}
+                  <span className="text-zinc-200">
+                    {(settings.ai.provider === "local_station"
+                      ? (settings.ai.endpoint?.trim() || defaults.moondreamEndpoint)
+                      : defaults.moondreamEndpoint
+                    ).trim()}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex items-center gap-3">
+                  <button
+                    disabled={stationBusy}
+                    onClick={async () => {
+                      setStationErr(null);
+                      setStationBusy(true);
+                      try {
+                        const endpoint =
+                          settings.ai.provider === "local_station"
+                            ? (settings.ai.endpoint?.trim() || defaults.moondreamEndpoint)
+                            : defaults.moondreamEndpoint;
+                        const st = await tauriInvoke<StationStatus>("station_start", { endpoint });
+                        setStation(st);
+                      } catch (e) {
+                        setStationErr((e as Error).message);
+                      } finally {
+                        setStationBusy(false);
+                      }
+                    }}
+                    className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+                  >
+                    {stationBusy ? "Starting…" : "Start Station"}
+                  </button>
+
+                  <button
+                    disabled={stationBusy}
+                    onClick={async () => {
+                      setStationErr(null);
+                      setStationBusy(true);
+                      try {
+                        const st = await tauriInvoke<StationStatus>("station_stop");
+                        setStation(st);
+                      } catch (e) {
+                        setStationErr((e as Error).message);
+                      } finally {
+                        setStationBusy(false);
+                      }
+                    }}
+                    className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+                  >
+                    Stop (if started by app)
+                  </button>
+                </div>
+
+                <div className="mt-2 text-xs text-zinc-500">
+                  Status:{" "}
+                  <span className={station?.reachable ? "text-emerald-300" : "text-zinc-300"}>
+                    {station?.reachable ? "Reachable" : "Not reachable"}
+                  </span>
+                  {station?.installed === false ? (
+                    <>
+                      {" "}
+                      <span className="text-amber-300">(`moondream-station` not found)</span>
+                    </>
+                  ) : null}
+                </div>
+
+                {station?.logPath ? (
+                  <div className="mt-1 text-[11px] text-zinc-600">
+                    Station logs: <span className="text-zinc-400">{station.logPath}</span>
+                  </div>
+                ) : null}
+
+                {!station?.installed ? (
+                  <div className="mt-2 text-[11px] text-zinc-600">
+                    Install (once):{" "}
+                    <span className="text-zinc-400">python3 -m pip install --user moondream-station</span>
+                  </div>
+                ) : null}
+
+                {stationErr ? <div className="mt-2 text-xs text-red-400">{stationErr}</div> : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
