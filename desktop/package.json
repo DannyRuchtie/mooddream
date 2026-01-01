@@ -5,6 +5,7 @@
   "scripts": {
     "check:bundled-node": "node scripts/check-bundled-node.mjs",
     "clean": "node scripts/clean.mjs",
+    "clean:all": "node scripts/clean.mjs --all",
     "prepare:worker": "node scripts/prepare-worker.mjs",
     "prepare:next": "node scripts/prepare-next.mjs",
     "dev": "tauri dev",

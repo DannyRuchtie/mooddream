@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 import time
+import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +37,11 @@ def repo_root_from_here() -> str:
 
 def default_db_path() -> str:
     return os.path.join(repo_root_from_here(), "data", "moondream.sqlite3")
+
+def now_iso_utc() -> str:
+    # Match the Next.js server format (ISO 8601 with Z) so TEXT ordering is consistent.
+    # Example: 2026-01-01T16:44:15.123Z
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -296,8 +302,27 @@ def connect(db_path: str) -> sqlite3.Connection:
 def fetch_next_job(con: sqlite3.Connection) -> Optional[Job]:
     retry_failed = (os.getenv("MOONDREAM_RETRY_FAILED", "0") or "0").lower() in ("1", "true", "yes")
     statuses = "('pending','processing','failed')" if retry_failed else "('pending','processing')"
-    row = con.execute(
-        f"""
+    # IMPORTANT: assets can be "trashed" (deleted_at set) while keeping asset_ai rows around.
+    # In that case, the file is moved into a per-project trash folder and the original storage_path
+    # no longer exists. Skip trashed assets to avoid endless file-not-found retries.
+    sql_with_trash_filter = f"""
+        SELECT
+          a.id AS asset_id,
+          a.project_id,
+          a.original_name,
+          a.mime_type,
+          a.storage_path,
+          a.storage_url,
+          a.sha256
+        FROM assets a
+        JOIN asset_ai ai ON ai.asset_id = a.id
+        WHERE ai.status IN {statuses}
+          AND a.mime_type LIKE 'image/%'
+          AND a.deleted_at IS NULL
+        ORDER BY ai.updated_at ASC
+        LIMIT 1
+        """
+    sql_without_trash_filter = f"""
         SELECT
           a.id AS asset_id,
           a.project_id,
@@ -312,7 +337,15 @@ def fetch_next_job(con: sqlite3.Connection) -> Optional[Job]:
         ORDER BY ai.updated_at ASC
         LIMIT 1
         """
-    ).fetchone()
+    try:
+        row = con.execute(sql_with_trash_filter).fetchone()
+    except sqlite3.OperationalError as exc:
+        # Backwards compatibility: older DBs might not have deleted_at yet.
+        msg = str(exc).lower()
+        if "no such column" in msg and "deleted_at" in msg:
+            row = con.execute(sql_without_trash_filter).fetchone()
+        else:
+            raise
     if not row:
         return None
     return Job(
@@ -327,9 +360,10 @@ def fetch_next_job(con: sqlite3.Connection) -> Optional[Job]:
 
 
 def set_status(con: sqlite3.Connection, asset_id: str, status: str) -> None:
+    ts = now_iso_utc()
     con.execute(
-        "UPDATE asset_ai SET status = ?, updated_at = datetime('now') WHERE asset_id = ?",
-        (status, asset_id),
+        "UPDATE asset_ai SET status = ?, updated_at = ? WHERE asset_id = ?",
+        (status, ts, asset_id),
     )
 
 
@@ -341,6 +375,7 @@ def write_results(
     status: str,
     model_version: str,
 ) -> None:
+    ts = now_iso_utc()
     con.execute(
         """
         UPDATE asset_ai
@@ -348,10 +383,10 @@ def write_results(
             tags_json = ?,
             status = ?,
             model_version = ?,
-            updated_at = datetime('now')
+            updated_at = ?
         WHERE asset_id = ?
         """,
-        (caption, json.dumps(tags), status, model_version, asset_id),
+        (caption, json.dumps(tags), status, model_version, ts, asset_id),
     )
 
 
@@ -976,6 +1011,9 @@ def main() -> int:
     poll = float(os.getenv("MOONDREAM_POLL_SECONDS", "1.0"))
 
     provider = get_provider()
+    # Helpful diagnostics in logs (especially in desktop builds).
+    if isinstance(provider, LocalStationProvider):
+        print(f"[worker] station_endpoint={provider.endpoint}")
     print(f"[worker] db={db_path}")
     print(f"[worker] provider={provider.__class__.__name__} model={provider.model_version()}")
 

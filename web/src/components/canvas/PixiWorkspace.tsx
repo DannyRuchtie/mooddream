@@ -236,6 +236,19 @@ function easeOut01(t: number) {
   return 1 - Math.pow(1 - x, 3);
 }
 
+function drawLoadingCard(g: PIXI.Graphics, w: number, h: number, lift: number) {
+  const ww = Number(w) || 0;
+  const hh = Number(h) || 0;
+  if (!(ww > 0 && hh > 0)) return;
+  const r = Math.min(IMAGE_CORNER_RADIUS, ww / 2, hh / 2);
+  // Shadow first (reuses the same visual language as loaded cards).
+  drawSoftShadow(g, ww, hh, r, lift);
+  // Card fill + subtle border so "something" is visible before the texture loads.
+  g.roundRect(-ww / 2, -hh / 2, ww, hh, r);
+  g.fill({ color: 0x0b1220, alpha: 0.55 });
+  g.stroke({ color: 0xffffff, width: 1, alpha: 0.07 });
+}
+
 function normalizeZOrder(
   prev: CanvasObjectRow[],
   bringToFrontIds: string[]
@@ -3184,6 +3197,20 @@ void main()
             shadowLiftByObjectIdRef.current.set(o.id, { current: 0, target: 0 });
           }
         }
+
+        // If the image texture hasn't loaded yet, draw a visible placeholder "card" so drops
+        // still appear on the canvas immediately.
+        if (o.type === "image" && o.asset_id && sh) {
+          const tw = d.texture?.orig?.width ?? 0;
+          const th = d.texture?.orig?.height ?? 0;
+          if (!(tw > 2 && th > 2)) {
+            const a = assetById.get(o.asset_id);
+            const pw = a?.width ?? 0;
+            const ph = a?.height ?? 0;
+            const lift = shadowLiftByObjectIdRef.current.get(o.id)?.current ?? 0;
+            if (pw > 0 && ph > 0) drawLoadingCard(sh, pw, ph, lift);
+          }
+        }
         continue;
       }
 
@@ -3264,6 +3291,15 @@ void main()
           }
           maybeTriggerPendingDropRipple(o.id, sp.texture);
           continue;
+        }
+
+        // Not cached yet: draw a placeholder card immediately using known asset dimensions.
+        // This prevents "dropped assets exist but nothing shows on canvas" confusion while textures load.
+        {
+          const pw = a.width ?? 0;
+          const ph = a.height ?? 0;
+          const lift = shadowLiftByObjectIdRef.current.get(o.id)?.current ?? 0;
+          if (pw > 0 && ph > 0) drawLoadingCard(sh, pw, ph, lift);
         }
 
         const existingPromise = texturePromiseRef.current.get(absUrl);

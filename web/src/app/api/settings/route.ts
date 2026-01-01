@@ -8,9 +8,41 @@ import {
 
 export const runtime = "nodejs";
 
+function withTimeout(ms: number) {
+  // AbortSignal.timeout is not available in all Node versions that Next may run under.
+  const anySignal = AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal };
+  if (typeof anySignal.timeout === "function") return anySignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms).unref?.();
+  return c.signal;
+}
+
+async function endpointReachable(url: string, timeoutMs: number) {
+  try {
+    // We don't require 200 here; some servers don't implement GET /v1 and may 404.
+    // Any HTTP response indicates "something is listening" (good enough for a default).
+    const res = await fetch(url, { method: "GET", signal: withTimeout(timeoutMs) });
+    return !!res;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET() {
   const settings = readAppSettings();
   const hfTokenSet = !!(settings.ai?.hfToken && String(settings.ai.hfToken).trim().length > 0);
+
+  // Prefer env (desktop sets MOONDREAM_ENDPOINT from saved settings).
+  // Otherwise, probe common local endpoints and pick the first reachable.
+  const envEndpoint = (process.env.MOONDREAM_ENDPOINT || "").trim();
+  const candidate = "http://localhost:2023/v1";
+  const fallback = "http://127.0.0.1:2020";
+  const moondreamEndpoint = envEndpoint
+    ? envEndpoint
+    : (await endpointReachable(candidate, 600))
+      ? candidate
+      : fallback;
+
   return Response.json({
     // Don't send the token back to the client by default (avoid leaking secrets).
     settings: {
@@ -22,7 +54,7 @@ export async function GET() {
     },
     defaults: {
       icloudDir: defaultIcloudDir(),
-      moondreamEndpoint: "http://127.0.0.1:2020",
+      moondreamEndpoint,
       // Default HF Inference API endpoint for the Moondream 3 Preview model:
       // https://huggingface.co/moondream/moondream3-preview
       hfEndpointUrl: "https://api-inference.huggingface.co/models/moondream/moondream3-preview",

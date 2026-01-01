@@ -37,4 +37,8 @@ export function setLastOpenedProjectId(projectId: string) {
   setAppState(LAST_PROJECT_KEY, projectId);
 }
 
+export function clearLastOpenedProjectId() {
+  setAppState(LAST_PROJECT_KEY, null);
+}
+
 

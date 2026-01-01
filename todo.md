@@ -1,4 +1,8 @@
 - [x] Undo
-- [ ] multiselect border
-- [ ] time stamp local sync 
-- [ ] theme color  
+- [x] multiselect border
+- [x] theme color 
+- [x] time stamp local sync 
+- [x] better file names 
+- [x] new effect when dropping
+- [] add all short cuts to the menu bar (M, 0, command+ Z command + K etc) make clear categoreis 
+ - [] test with apple intelegence  

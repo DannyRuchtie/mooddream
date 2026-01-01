@@ -159,6 +159,12 @@
       "namedRegex": "^/_not\\-found(?:/)?$"
     },
     {
+      "page": "/api/ai/progress",
+      "regex": "^/api/ai/progress(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/ai/progress(?:/)?$"
+    },
+    {
       "page": "/api/health",
       "regex": "^/api/health(?:/)?$",
       "routeKeys": {},

@@ -1,6 +1,7 @@
 {
   "version": 1,
   "functions": {
+    "/api/ai/progress": {},
     "/api/assets/[assetId]": {},
     "/api/assets/[assetId]/restore": {},
     "/api/projects": {},

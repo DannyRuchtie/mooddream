@@ -21,6 +21,17 @@ type Settings = {
   };
 };
 
+type AiProgress = {
+  counts: { pending: number; processing: number; done: number; failed: number; total: number };
+  worker: {
+    logAvailable: boolean;
+    lastLogAt: string | null;
+    currentAssetId: string | null;
+    currentFile: string | null;
+    recentLines: string[];
+  };
+};
+
 export default function SettingsClient() {
   const router = useRouter();
   const sp = useSearchParams();
@@ -38,6 +49,8 @@ export default function SettingsClient() {
   const [retryMsg, setRetryMsg] = useState<string | null>(null);
   const [retryBusy, setRetryBusy] = useState(false);
 
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+
   const [settings, setSettings] = useState<Settings>({
     storage: { mode: "local" },
     ai: { provider: "local_station" },
@@ -49,7 +62,7 @@ export default function SettingsClient() {
     hfTokenSet: boolean;
   }>({
     icloudDir: null,
-    moondreamEndpoint: "http://127.0.0.1:2020",
+    moondreamEndpoint: "http://localhost:2023/v1",
     hfEndpointUrl: "https://api-inference.huggingface.co/models/moondream/moondream3-preview",
     hfTokenSet: false,
   });
@@ -70,12 +83,50 @@ export default function SettingsClient() {
         defaults: { icloudDir: string | null; moondreamEndpoint: string; hfEndpointUrl: string; hfTokenSet: boolean };
       };
       if (cancelled) return;
-      setSettings(data.settings);
+      // Prefill the Local Station endpoint so the field doesn't look "unsaved" when empty.
+      // This does NOT write anything to disk until the user clicks Save.
+      const nextSettings: Settings = {
+        ...data.settings,
+        ai: {
+          ...data.settings.ai,
+          endpoint:
+            data.settings.ai.provider === "local_station"
+              ? (data.settings.ai.endpoint?.trim() || data.defaults.moondreamEndpoint)
+              : data.settings.ai.endpoint,
+        },
+      };
+      setSettings(nextSettings);
       setDefaults(data.defaults);
       setLoaded(true);
     })().catch(() => setLoaded(true));
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/ai/progress", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as AiProgress;
+        if (cancelled) return;
+        setAiProgress(data);
+      } catch {
+        // ignore
+      } finally {
+        if (cancelled) return;
+        timer = window.setTimeout(tick, 2000);
+      }
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
     };
   }, []);
 
@@ -286,7 +337,7 @@ export default function SettingsClient() {
           <div className="mt-4 flex items-center gap-3">
             <button
               disabled={!loaded || saving}
-              onClick={saveAll}
+              onClick={() => saveAll()}
               className="rounded-lg bg-zinc-50 px-4 py-2 text-sm font-medium text-zinc-950 disabled:opacity-60"
             >
               {saving ? "Saving…" : "Save"}
@@ -372,7 +423,7 @@ export default function SettingsClient() {
                 ) : (
                   <>
                     Examples: <span className="text-zinc-400">http://127.0.0.1:2021/v1</span> or{" "}
-                    <span className="text-zinc-400">http://127.0.0.1:2020</span> (the worker accepts both and
+                    <span className="text-zinc-400">http://localhost:2023/v1</span> (the worker accepts both and
                     normalizes). If <span className="text-zinc-400">localhost</span> gives issues, prefer{" "}
                     <span className="text-zinc-400">127.0.0.1</span>.
                   </>
@@ -414,7 +465,7 @@ export default function SettingsClient() {
             <div className="flex items-center gap-3">
               <button
                 disabled={!loaded || saving}
-                onClick={saveAll}
+                onClick={() => saveAll()}
                 className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
               >
                 {saving ? "Saving…" : "Save endpoint"}
@@ -451,6 +502,53 @@ export default function SettingsClient() {
             ) : null}
             </div>
             {retryMsg ? <div className="text-xs text-zinc-500">{retryMsg}</div> : null}
+
+            <div className="mt-6 rounded-lg border border-zinc-900 bg-zinc-950 px-3 py-3">
+              <div className="text-xs font-medium text-zinc-200">Worker activity</div>
+              <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-zinc-500">
+                <div>
+                  Pending: <span className="text-zinc-200">{aiProgress ? aiProgress.counts.pending : "—"}</span>
+                </div>
+                <div>
+                  Processing: <span className="text-zinc-200">{aiProgress ? aiProgress.counts.processing : "—"}</span>
+                </div>
+                <div>
+                  Done: <span className="text-zinc-200">{aiProgress ? aiProgress.counts.done : "—"}</span>
+                </div>
+                <div>
+                  Failed: <span className="text-zinc-200">{aiProgress ? aiProgress.counts.failed : "—"}</span>
+                </div>
+              </div>
+
+              <div className="mt-2 text-xs text-zinc-500">
+                {aiProgress?.worker.currentFile ? (
+                  <>
+                    Currently processing: <span className="text-zinc-200">{aiProgress.worker.currentFile}</span>
+                  </>
+                ) : aiProgress?.worker.logAvailable ? (
+                  <>Worker is idle (no “processing …” line in recent logs).</>
+                ) : (
+                  <>Worker log not found (desktop-only; this is expected in some dev setups).</>
+                )}
+              </div>
+
+              {aiProgress?.worker.lastLogAt ? (
+                <div className="mt-1 text-[11px] text-zinc-600">
+                  Last worker output: <span className="text-zinc-400">{aiProgress.worker.lastLogAt}</span>
+                </div>
+              ) : null}
+
+              {aiProgress?.worker.logAvailable ? (
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs text-zinc-400 hover:text-zinc-200">
+                    Recent worker log
+                  </summary>
+                  <pre className="mt-2 max-h-56 overflow-auto rounded-md border border-zinc-900 bg-black/40 p-2 text-[11px] leading-relaxed text-zinc-300">
+                    {(aiProgress?.worker.recentLines || []).join("\n")}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>

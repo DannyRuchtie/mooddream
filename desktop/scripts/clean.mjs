@@ -13,10 +13,15 @@ const repoRoot = path.resolve(__dirname, "..", "..");
 const targets = [
   path.join(repoRoot, "desktop", "src-tauri", "target"),
   path.join(repoRoot, "desktop", "src-tauri", "resources", "next"),
-  path.join(repoRoot, "web", ".next"),
   path.join(repoRoot, "worker", "build"),
   path.join(repoRoot, "worker", "dist"),
 ];
+
+// Optional: also wipe Next.js build output (can disrupt a running `web` dev server).
+const includeWeb = process.argv.includes("--all") || process.argv.includes("--web");
+if (includeWeb) {
+  targets.push(path.join(repoRoot, "web", ".next"));
+}
 
 function rm(p) {
   fs.rmSync(p, { recursive: true, force: true });

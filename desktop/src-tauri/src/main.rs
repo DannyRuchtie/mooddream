@@ -322,7 +322,7 @@ fn spawn_next_server(
         .as_ref()
         .and_then(|a| a.endpoint.as_ref())
         .map(|s| s.as_str())
-        .unwrap_or("http://127.0.0.1:2020"),
+        .unwrap_or("http://localhost:2023/v1"),
     )
     // Optional: HF endpoint/token (used by the bundled worker; safe to expose to local server too).
     .env(
@@ -379,7 +379,7 @@ fn spawn_worker(
     .as_ref()
     .and_then(|a| a.endpoint.as_ref())
     .cloned()
-    .unwrap_or_else(|| "http://127.0.0.1:2020".to_string());
+    .unwrap_or_else(|| "http://localhost:2023/v1".to_string());
   let provider = settings
     .ai
     .as_ref()
@@ -403,8 +403,9 @@ fn spawn_worker(
     .env("HF_ENDPOINT_URL", settings.ai.as_ref().and_then(|a| a.endpoint.as_ref()).cloned().unwrap_or_default())
     .env("HF_TOKEN", hf_token)
     .env("MOONDREAM_POLL_SECONDS", std::env::var("MOONDREAM_POLL_SECONDS").unwrap_or_else(|_| "1.0".to_string()))
-    // Retry old failures automatically (useful if Station wasn't running on first launch).
-    .env("MOONDREAM_RETRY_FAILED", std::env::var("MOONDREAM_RETRY_FAILED").unwrap_or_else(|_| "1".to_string()))
+    // Default: do NOT auto-retry "failed" forever (prevents tight loops if a file is missing on disk).
+    // Transient Station/network errors are already re-queued to "pending" by the worker.
+    .env("MOONDREAM_RETRY_FAILED", std::env::var("MOONDREAM_RETRY_FAILED").unwrap_or_else(|_| "0".to_string()))
     .env("MOONDREAM_APP_CONFIG_DIR", config_root)
     .stdin(Stdio::null())
     .stdout(Stdio::from(out))
