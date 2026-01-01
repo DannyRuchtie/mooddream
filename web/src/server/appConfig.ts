@@ -49,13 +49,17 @@ export function settingsFilePath() {
 export function defaultIcloudDir() {
   const home = process.env.HOME || os.homedir() || "";
   if (!home) return null;
-  return path.join(
+  const root = path.join(
     home,
     "Library",
     "Mobile Documents",
-    "com~apple~CloudDocs",
-    "Moondream"
+    "com~apple~CloudDocs"
   );
+  const next = path.join(root, "Reference");
+  const old = path.join(root, "Moondream");
+  // Branding change: default to "Reference", but keep compatibility with existing installs.
+  if (fs.existsSync(old) && !fs.existsSync(next)) return old;
+  return next;
 }
 
 export function defaultLocalDataDir() {

@@ -82,12 +82,26 @@ npm run build
 2. Copy the Next standalone output into `desktop/src-tauri/resources/next`
 3. Build the Tauri app bundle
 
+### Updating the app icon
+
+Tauri bundles icons from `desktop/src-tauri/icons/` (not `desktop/icon.png` directly). If you change `desktop/icon.png`, regenerate the Tauri icon set and rebuild:
+
+```bash
+cd /Users/dannyruchtie/Documents/moondream/desktop/src-tauri
+npx --no-install tauri icon ../icon.png
+```
+
+```bash
+cd /Users/dannyruchtie/Documents/moondream/desktop
+npx --no-install tauri build
+```
+
 ### Output location
 
 After a successful build, the `.app` bundle is written to:
 
 ```text
-desktop/src-tauri/target/release/bundle/macos/Moondream.app
+desktop/src-tauri/target/release/bundle/macos/Reference.app
 ```
 
 ### Optional: create a simple DMG (recommended, reliable)
@@ -96,11 +110,11 @@ Tauri's "fancy" DMG bundling (Finder layout AppleScript) can occasionally fail t
 This creates a simple DMG that works reliably:
 
 ```bash
-APP="/Users/$USER/Documents/moondream/desktop/src-tauri/target/release/bundle/macos/Moondream.app"
-OUT="/Users/$USER/Documents/moondream/desktop/src-tauri/target/release/bundle/dmg/Moondream_aarch64-simple.dmg"
+APP="/Users/$USER/Documents/moondream/desktop/src-tauri/target/release/bundle/macos/Reference.app"
+OUT="/Users/$USER/Documents/moondream/desktop/src-tauri/target/release/bundle/dmg/Reference_aarch64-simple.dmg"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
-hdiutil create -volname "Moondream" -srcfolder "$APP" -ov -format UDZO "$OUT"
+hdiutil create -volname "Reference" -srcfolder "$APP" -ov -format UDZO "$OUT"
 echo "DMG written to: $OUT"
 ```
 
@@ -131,8 +145,10 @@ Settings are stored at:
 If you switch Storage to **iCloud Drive**, the app will (on next launch) store the entire data folder (DB + assets + thumbs) under:
 
 ```text
-~/Library/Mobile Documents/com~apple~CloudDocs/Moondream/
+~/Library/Mobile Documents/com~apple~CloudDocs/Reference/
 ```
+
+Compatibility note: if you previously used the old iCloud folder, the app will continue using it unless you explicitly migrate.
 
 Important: iCloud Drive sync is file-based. Avoid opening the app on multiple Macs at the same time when using iCloud storage (SQLite WAL files can conflict).
 
@@ -149,7 +165,7 @@ The Next.js server logs are written to:
 ~/Library/Application Support/com.moondream.desktop/logs/next-server.log
 ```
 
-The worker expects **Moondream Station** to be running locally (default `http://127.0.0.1:2020`).
+The worker expects the local AI station to be running (default `http://127.0.0.1:2020`).
 You can override via environment variables when launching the app:
 
 - `MOONDREAM_ENDPOINT` (default `http://127.0.0.1:2020`)

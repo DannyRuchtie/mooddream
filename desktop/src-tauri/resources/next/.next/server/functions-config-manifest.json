@@ -2,6 +2,7 @@
   "version": 1,
   "functions": {
     "/api/assets/[assetId]": {},
+    "/api/assets/[assetId]/restore": {},
     "/api/projects": {},
     "/api/projects/[projectId]": {},
     "/api/projects/[projectId]/ai/retry": {},

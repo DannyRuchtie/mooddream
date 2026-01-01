@@ -1,11 +1,11 @@
-## Moondream Canvas
+## Reference
 
 High‑performance, Figma‑like canvas for building layouts by dropping images onto an infinite board, arranging them with fast transforms (move/resize/rotate), and keeping everything **local‑first**.
 
 - **Frontend**: Next.js + PixiJS (WebGL)
 - **DB**: SQLite (with FTS5 search)
 - **Storage**: local filesystem under `data/`
-- **AI (optional)**: Moondream Station (local) or Hugging Face endpoint (worker)
+- **AI (optional)**: local endpoint or Hugging Face endpoint (worker)
 
 <img src="screen-4.jpg" alt="Workspace selection and transforms" width="860" />
 
@@ -21,7 +21,7 @@ High‑performance, Figma‑like canvas for building layouts by dropping images 
 - Persist canvas layout and viewport per project
 - Store assets + thumbnails on disk
 - Search assets (filename + AI caption/tags)
-- Optional background worker to caption/tag images via Moondream
+- Optional background worker to caption/tag images via an AI endpoint
 
 ## Core concepts (how the app thinks)
 
@@ -44,7 +44,7 @@ High‑performance, Figma‑like canvas for building layouts by dropping images 
 Requirements:
 
 - Node.js 20+
-- Python 3.10+ (only needed for Moondream / worker)
+- Python 3.10+ (only needed for the worker / station)
 
 Install and run:
 
@@ -60,9 +60,9 @@ Then open `http://localhost:3000`.
 
 See `desktop/README.md` for the up-to-date build steps (bundles Node + Next server inside a Tauri app).
 
-> `npm run dev` starts both Next.js and `moondream-station` (if installed). You may need to type `start` inside the Moondream Station REPL to start the REST API.
+> `npm run dev` starts both Next.js and `moondream-station` (if installed). You may need to type `start` inside the station REPL to start the REST API.
 
-## Install Moondream Station (local)
+## Install local station (via `moondream-station`)
 
 Install the `moondream-station` CLI so it’s available on your PATH.
 
@@ -98,7 +98,7 @@ Sanity check:
 curl -s http://127.0.0.1:2020/health
 ```
 
-## Optional: run the Moondream worker (caption/tags + embeddings)
+## Optional: run the worker (caption/tags + embeddings)
 
 The worker polls the shared SQLite DB (`data/moondream.sqlite3`) for images with `asset_ai.status = 'pending'` and writes back:
 
@@ -119,7 +119,7 @@ python moondream_worker.py
 Environment variables (examples):
 
 ```bash
-# Local Moondream Station
+# Local station
 export MOONDREAM_PROVIDER=local_station
 export MOONDREAM_ENDPOINT=http://127.0.0.1:2020
 
@@ -132,8 +132,8 @@ export MOONDREAM_ENDPOINT=http://127.0.0.1:2020
 ## Repository structure
 
 - `web/`: Next.js app (canvas UI, API routes, DB access layer)
-- `worker/`: Python worker for asynchronous Moondream processing
-- `moondream_batch.py`: standalone batch helper to hit a running Moondream Station REST API
+- `worker/`: Python worker for asynchronous AI processing
+- `moondream_batch.py`: standalone batch helper to hit a running station REST API
 - `data/`: local dev data (SQLite DB + per-project assets/thumbs/previews)
 
 ## Mermaid: database schema (SQLite)
@@ -242,7 +242,7 @@ flowchart LR
   API --> DB[("SQLite: data/moondream.sqlite3")];
   API --> FS[("Filesystem: data/projects/{projectId}/...")];
   W["worker/moondream_worker.py"] --> DB;
-  W -->|HTTP| MS["Moondream Station (127.0.0.1:2020)"];
+  W -->|HTTP| MS["Station (127.0.0.1:2020)"];
   W -->|optional HTTP| HF["Hugging Face Endpoint"];
 ```
 

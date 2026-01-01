@@ -3,16 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Moondream</title>
+    <title>Reference</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="wrap">
       <div class="card">
-        <div class="title">Starting Moondream…</div>
-        <div class="sub">Launching the local server.</div>
-        <div class="spinner" aria-hidden="true"></div>
-        <div id="err" class="err" hidden></div>
+        <div class="err" id="err" hidden></div>
       </div>
     </div>
 
@@ -26,8 +23,10 @@
       const errEl = document.getElementById("err");
 
       function showErr(msg) {
-        errEl.hidden = false;
-        errEl.textContent = msg;
+        if (errEl) {
+          errEl.hidden = false;
+          errEl.textContent = msg;
+        }
       }
 
       async function sleep(ms) {
@@ -58,7 +57,16 @@
         }
         if (!port) {
           showErr(
-            "Failed to start local server (missing port). If you're running a dev build, start the web server at http://localhost:3000."
+            [
+              "Failed to start local server (missing port).",
+              "",
+              "If you're running a dev build, start the web server at http://localhost:3000.",
+              __MOONDREAM_LOG_HINT__
+                ? `Logs: ${__MOONDREAM_LOG_HINT__}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join("\n")
           );
           return;
         }
@@ -68,7 +76,7 @@
         // `fetch(http://127.0.0.1:PORT/...)` as mixed-content and block it.
         // So we do a direct navigation to the local server; it should be ready quickly.
         const url = `http://127.0.0.1:${port}/`;
-        await sleep(120);
+        await sleep(150);
         window.location.replace(url);
       })();
     </script>

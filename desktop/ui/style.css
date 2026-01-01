@@ -13,7 +13,7 @@ body {
     Arial, "Apple Color Emoji", "Segoe UI Emoji";
   /* Keep the loading screen truly dark (no blue tint) */
   background: #000;
-  color: #e6edf7;
+  color: #ffffff;
 }
 
 .wrap {
@@ -24,12 +24,6 @@ body {
 
 .card {
   width: min(520px, 92vw);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  padding: 22px 22px 18px;
-  background: rgba(15, 22, 35, 0.7);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(10px);
 }
 
 .title {

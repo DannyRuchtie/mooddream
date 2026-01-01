@@ -18,7 +18,7 @@ function spawnCmd(name, cmd, { env = process.env } = {}) {
 const stationCmd = process.env.MOONDREAM_STATION_CMD || "moondream-station";
 const nextCmd = process.env.NEXT_DEV_CMD || "next dev --webpack";
 const startWorker = (process.env.MOONDREAM_START_WORKER ?? "1") !== "0";
-// Default off: Moondream Station is interactive and may require a real TTY.
+// Default off: the station CLI is interactive and may require a real TTY.
 // Run it separately (recommended), or set MOONDREAM_START_STATION=1.
 const startStation = (process.env.MOONDREAM_START_STATION ?? "0") !== "0";
 
@@ -200,7 +200,7 @@ let workerExited = false;
   if (!captionReady) {
     console.log(
       `[dev] station reachable but caption probe not ready yet; worker will retry/backoff.\n` +
-        `      If this persists, open Moondream Station and ensure the model service is running.`
+        `      If this persists, open the station UI/REPL and ensure the model service is running.`
     );
   }
 

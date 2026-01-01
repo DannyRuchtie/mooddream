@@ -104,13 +104,19 @@ fn resource_path(app: &tauri::AppHandle, rel: &str) -> Option<PathBuf> {
 
 fn default_icloud_dir() -> Option<PathBuf> {
   let home = std::env::var("HOME").ok()?;
-  Some(
-    PathBuf::from(home)
-      .join("Library")
-      .join("Mobile Documents")
-      .join("com~apple~CloudDocs")
-      .join("Moondream"),
-  )
+  let root = PathBuf::from(home)
+    .join("Library")
+    .join("Mobile Documents")
+    .join("com~apple~CloudDocs");
+
+  // Branding change: default to "Reference", but keep compatibility with existing installs
+  // that may already have data under the previous folder name.
+  let new = root.join("Reference");
+  let old = root.join("Moondream");
+  if old.exists() && !new.exists() {
+    return Some(old);
+  }
+  Some(new)
 }
 
 fn read_settings(config_root: &PathBuf) -> AppSettings {
@@ -471,7 +477,7 @@ fn main() {
     CustomMenuItem::new("sc_canvas_ripple_test".to_string(), "Ripple Test (dev) (R)").disabled();
 
   let app_menu = Menu::new()
-    .add_native_item(MenuItem::About("Moondream".to_string(), AboutMetadata::default()))
+    .add_native_item(MenuItem::About("Reference".to_string(), AboutMetadata::default()))
     .add_native_item(MenuItem::Separator)
     .add_item(settings.clone())
     .add_native_item(MenuItem::Separator)
@@ -542,7 +548,7 @@ fn main() {
 
   // macOS requires submenus for top-level items.
   let menu = Menu::new()
-    .add_submenu(Submenu::new("Moondream", app_menu))
+    .add_submenu(Submenu::new("Reference", app_menu))
     .add_submenu(Submenu::new("File", file_menu))
     .add_submenu(Submenu::new("Edit", edit_menu))
     .add_submenu(Submenu::new("View", view_menu))
@@ -641,8 +647,8 @@ fn main() {
       // Hitting /api/projects forces `getDb()` + migrations.
       let _ = http_get_200("127.0.0.1", port, "/api/projects", Duration::from_secs(8));
 
-      // Start the bundled worker automatically (best-effort). It will talk to a local Moondream Station.
-      // If Station is not running, the worker will log errors and keep retrying.
+      // Start the bundled worker automatically (best-effort). It will talk to the local AI station.
+      // If the station isn't running, the worker will log errors and keep retrying.
       let db_path = data_dir.join("moondream.sqlite3");
       if let Ok(w) = spawn_worker(&handle, &db_path, &config_root, &settings) {
         let state = app.state::<ServerState>();

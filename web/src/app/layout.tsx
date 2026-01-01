@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Moondream Invite Canvas",
+  title: "Reference",
   description: "Local-first canvas for building layouts by dropping images onto an infinite board.",
   manifest: "/manifest.webmanifest",
 };

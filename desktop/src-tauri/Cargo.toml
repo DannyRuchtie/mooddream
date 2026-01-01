@@ -1,8 +1,8 @@
 [package]
 name = "moondream-desktop"
 version = "0.1.0"
-description = "Moondream desktop wrapper (Tauri + local Next.js server)"
-authors = ["Moondream"]
+description = "Reference desktop wrapper (Tauri + local Next.js server)"
+authors = ["Reference"]
 edition = "2021"
 
 [build-dependencies]

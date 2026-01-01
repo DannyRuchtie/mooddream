@@ -277,13 +277,13 @@ export default function SettingsClient() {
         <div className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
           <div className="text-sm font-medium">AI</div>
           <div className="mt-1 text-xs text-zinc-500">
-            Configure the Moondream endpoint used by the bundled worker. If you see “failed”, it often means the app
-            couldn’t reach the endpoint at the time.
+            Configure the AI endpoint used by the bundled worker. If you see “failed”, it often means the app couldn’t
+            reach the endpoint at the time.
           </div>
 
           <div className="mt-4 space-y-3">
             <div>
-              <div className="mb-1 text-xs text-zinc-500">Moondream endpoint</div>
+              <div className="mb-1 text-xs text-zinc-500">AI endpoint</div>
               <input
                 value={settings.ai.endpoint ?? ""}
                 onChange={(e) => setSettings((s) => ({ ...s, ai: { ...s.ai, endpoint: e.target.value } }))}

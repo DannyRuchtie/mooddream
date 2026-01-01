@@ -5,7 +5,7 @@
     "distDir": "../ui"
   },
   "package": {
-    "productName": "Moondream",
+    "productName": "Reference",
     "version": "0.1.0"
   },
   "tauri": {
@@ -39,14 +39,13 @@
     },
     "windows": [
       {
-        "title": "Moondream",
+        "title": "Reference",
         "width": 1280,
         "height": 800,
         "resizable": true,
         "fileDropEnabled": false,
-        "theme": "Dark",
-        "titleBarStyle": "Transparent"
-      }
+        "theme": "Dark"
+        }
     ]
   }
 }

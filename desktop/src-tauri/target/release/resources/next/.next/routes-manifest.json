@@ -30,6 +30,14 @@
       "namedRegex": "^/api/assets/(?<nxtPassetId>[^/]+?)(?:/)?$"
     },
     {
+      "page": "/api/assets/[assetId]/restore",
+      "regex": "^/api/assets/([^/]+?)/restore(?:/)?$",
+      "routeKeys": {
+        "nxtPassetId": "nxtPassetId"
+      },
+      "namedRegex": "^/api/assets/(?<nxtPassetId>[^/]+?)/restore(?:/)?$"
+    },
+    {
       "page": "/api/projects/[projectId]",
       "regex": "^/api/projects/([^/]+?)(?:/)?$",
       "routeKeys": {

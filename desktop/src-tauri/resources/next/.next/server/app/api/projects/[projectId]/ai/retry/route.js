@@ -1,4 +1,4 @@
-(()=>{var a={};a.id=619,a.ids=[619],a.modules={261:a=>{"use strict";a.exports=require("next/dist/shared/lib/router/utils/app-paths")},10846:a=>{"use strict";a.exports=require("next/dist/compiled/next-server/app-page.runtime.prod.js")},29294:a=>{"use strict";a.exports=require("next/dist/server/app-render/work-async-storage.external.js")},44870:a=>{"use strict";a.exports=require("next/dist/compiled/next-server/app-route.runtime.prod.js")},63033:a=>{"use strict";a.exports=require("next/dist/server/app-render/work-unit-async-storage.external.js")},73024:a=>{"use strict";a.exports=require("node:fs")},76760:a=>{"use strict";a.exports=require("node:path")},78335:()=>{},86439:a=>{"use strict";a.exports=require("next/dist/shared/lib/no-fallback-error.external")},92913:(a,b,c)=>{"use strict";c.d(b,{L:()=>n});var d=c(73024),e=c.n(d),f=c(76760),g=c.n(f);let h=require("better-sqlite3");var i=c.n(h);let j=`PRAGMA foreign_keys = ON;
+(()=>{var a={};a.id=619,a.ids=[619],a.modules={261:a=>{"use strict";a.exports=require("next/dist/shared/lib/router/utils/app-paths")},10846:a=>{"use strict";a.exports=require("next/dist/compiled/next-server/app-page.runtime.prod.js")},29294:a=>{"use strict";a.exports=require("next/dist/server/app-render/work-async-storage.external.js")},42911:(a,b,c)=>{"use strict";c.d(b,{L:()=>p});var d=c(73024),e=c.n(d),f=c(76760),g=c.n(f),h=c(87550),i=c.n(h);let j=`PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -105,7 +105,31 @@ CREATE TABLE IF NOT EXISTS app_state (
   value TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-`;function n(){if(!globalThis.__moondreamDb){let a,b=process.env.MOONDREAM_DB_PATH||((a=(process.env.MOONDREAM_DATA_DIR||"").trim())?g().resolve(a,"moondream.sqlite3"):g().resolve(process.cwd(),"..","data","moondream.sqlite3"));e().mkdirSync(g().dirname(b),{recursive:!0});let c=new(i())(b);c.pragma("journal_mode = WAL"),c.pragma("busy_timeout = 5000"),globalThis.__moondreamDb=c}var a=globalThis.__moondreamDb;a.pragma("foreign_keys = ON");let b=a.prepare("PRAGMA user_version").get(),c=b?.user_version??0;if(c<1){a.exec("BEGIN");try{a.exec(j),a.exec("PRAGMA user_version = 1"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=1}if(c<2){a.exec("BEGIN");try{a.exec(k),a.exec("PRAGMA user_version = 2"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=2}if(c<3){a.exec("BEGIN");try{a.exec(l),a.exec("PRAGMA user_version = 3"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=3}if(c<4){a.exec("BEGIN");try{a.exec(m),a.exec("PRAGMA user_version = 4"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}}return globalThis.__moondreamDb}},96487:()=>{},96941:(a,b,c)=>{"use strict";c.r(b),c.d(b,{handler:()=>F,patchFetch:()=>E,routeModule:()=>A,serverHooks:()=>D,workAsyncStorage:()=>B,workUnitAsyncStorage:()=>C});var d={};c.r(d),c.d(d,{POST:()=>z,runtime:()=>x});var e=c(19225),f=c(84006),g=c(8317),h=c(99373),i=c(34775),j=c(24235),k=c(261),l=c(54365),m=c(90771),n=c(73461),o=c(67798),p=c(92280),q=c(62018),r=c(45696),s=c(47929),t=c(86439),u=c(37527),v=c(434),w=c(92913);let x="nodejs",y=v.Ikc({assetId:v.YjP().min(1).optional()}).strict();async function z(a,b){let{projectId:c}=await b.params,d=await a.json().catch(()=>({})),e=y.safeParse(d);if(!e.success)return Response.json({error:"Invalid body"},{status:400});let f=(0,w.L)(),g=0;if(e.data.assetId){let a=f.prepare(`UPDATE asset_ai
+`,n=`PRAGMA foreign_keys = ON;
+
+-- Soft-delete assets (Trash) so deletes are reversible.
+ALTER TABLE assets ADD COLUMN deleted_at TEXT;
+ALTER TABLE assets ADD COLUMN trashed_storage_path TEXT;
+ALTER TABLE assets ADD COLUMN trashed_thumb_path TEXT;
+
+-- Allow re-uploading a file after trashing it by enforcing uniqueness only for non-deleted assets.
+DROP INDEX IF EXISTS assets_project_sha256_uq;
+CREATE UNIQUE INDEX IF NOT EXISTS assets_project_sha256_uq
+  ON assets(project_id, sha256)
+  WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS assets_deleted_at_idx ON assets(deleted_at);
+`,o=`PRAGMA foreign_keys = ON;
+
+-- Track per-project revision counters so clients can detect stale writes (helps multi-device + iCloud scenarios).
+CREATE TABLE IF NOT EXISTS project_sync (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  canvas_rev INTEGER NOT NULL DEFAULT 0,
+  view_rev INTEGER NOT NULL DEFAULT 0,
+  canvas_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  view_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;function p(){if(!globalThis.__moondreamDb){let a,b=process.env.MOONDREAM_DB_PATH||((a=(process.env.MOONDREAM_DATA_DIR||"").trim())?g().resolve(a,"moondream.sqlite3"):g().resolve(process.cwd(),"..","data","moondream.sqlite3"));e().mkdirSync(g().dirname(b),{recursive:!0});let c=new(i())(b);c.pragma("journal_mode = WAL"),c.pragma("busy_timeout = 5000"),globalThis.__moondreamDb=c}var a=globalThis.__moondreamDb;a.pragma("foreign_keys = ON");let b=a.prepare("PRAGMA user_version").get(),c=b?.user_version??0;if(c<1){a.exec("BEGIN");try{a.exec(j),a.exec("PRAGMA user_version = 1"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=1}if(c<2){a.exec("BEGIN");try{a.exec(k),a.exec("PRAGMA user_version = 2"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=2}if(c<3){a.exec("BEGIN");try{a.exec(l),a.exec("PRAGMA user_version = 3"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}c=3}if(c<4){a.exec("BEGIN");try{a.exec(m),a.exec("PRAGMA user_version = 4"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}}if(c<5){a.exec("BEGIN");try{a.exec(n),a.exec("PRAGMA user_version = 5"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}}if(c<6){a.exec("BEGIN");try{a.exec(o),a.exec("PRAGMA user_version = 6"),a.exec("COMMIT")}catch(b){throw a.exec("ROLLBACK"),b}}return globalThis.__moondreamDb}},44870:a=>{"use strict";a.exports=require("next/dist/compiled/next-server/app-route.runtime.prod.js")},63033:a=>{"use strict";a.exports=require("next/dist/server/app-render/work-unit-async-storage.external.js")},73024:a=>{"use strict";a.exports=require("node:fs")},76760:a=>{"use strict";a.exports=require("node:path")},78335:()=>{},86439:a=>{"use strict";a.exports=require("next/dist/shared/lib/no-fallback-error.external")},87550:a=>{"use strict";a.exports=require("better-sqlite3")},96487:()=>{},96941:(a,b,c)=>{"use strict";c.r(b),c.d(b,{handler:()=>F,patchFetch:()=>E,routeModule:()=>A,serverHooks:()=>D,workAsyncStorage:()=>B,workUnitAsyncStorage:()=>C});var d={};c.r(d),c.d(d,{POST:()=>z,runtime:()=>x});var e=c(19225),f=c(84006),g=c(8317),h=c(99373),i=c(34775),j=c(24235),k=c(261),l=c(54365),m=c(90771),n=c(73461),o=c(67798),p=c(92280),q=c(62018),r=c(45696),s=c(47929),t=c(86439),u=c(37527),v=c(434),w=c(42911);let x="nodejs",y=v.Ikc({assetId:v.YjP().min(1).optional()}).strict();async function z(a,b){let{projectId:c}=await b.params,d=await a.json().catch(()=>({})),e=y.safeParse(d);if(!e.success)return Response.json({error:"Invalid body"},{status:400});let f=(0,w.L)(),g=0;if(e.data.assetId){let a=f.prepare(`UPDATE asset_ai
          SET status='pending', updated_at=datetime('now')
          WHERE asset_id = ?`).run(e.data.assetId);g=a?.changes??0}else{let a=f.prepare(`UPDATE asset_ai
          SET status='pending', updated_at=datetime('now')
