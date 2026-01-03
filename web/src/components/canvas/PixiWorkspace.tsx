@@ -2497,8 +2497,12 @@ void main()
           : null;
         const openThreshold = fitZoom ? clamp(fitZoom * FULLSCREEN_DBLCLICK_FIT_FACTOR, 0.25, 0.75) : 0.35;
         if (currentZoom < openThreshold) {
-          // Don't auto-zoom on double click when zoomed out.
-          // Zooming in is done explicitly via Space (focus toggle) to avoid surprising jumps.
+          // When zoomed out, treat double click as a focus-zoom (same feel as pressing Space),
+          // so users can quickly zoom into the clicked item without opening fullscreen.
+          if (sp) {
+            setSelectedIds([objectId]);
+            focusZoomInOnSprite(sp);
+          }
           return;
         }
 
@@ -3076,7 +3080,7 @@ void main()
               if (fillW > 0.75) {
                 const rFill = Math.min(r, fillW / 2);
                 g.roundRect(x, y, fillW, barH, rFill);
-                g.fill({ color: THEME_ACCENT, alpha: 0.92 });
+                g.fill({ color: 0xffffff, alpha: 0.92 });
               }
             } else {
               g.visible = false;

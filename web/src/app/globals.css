@@ -27,3 +27,18 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Native <video controls> styling (best-effort; supported in Tauri WebViews/Chromium).
+   Goal: make the playback progress indicator white instead of the default blue. */
+.video-controls-white {
+  accent-color: #ffffff;
+}
+
+/* WebKit/Blink native media controls timeline/progress (non-standard selectors). */
+.video-controls-white::-webkit-media-controls-timeline,
+.video-controls-white::-webkit-media-controls-timeline-container,
+.video-controls-white::-webkit-media-controls-progress-bar,
+.video-controls-white::-webkit-media-controls-playback-progress-bar,
+.video-controls-white::-webkit-media-controls-playback-progressbar {
+  filter: grayscale(1) saturate(0) brightness(2);
+}

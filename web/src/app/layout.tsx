@@ -15,7 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Reference",
+  // Keep the window title bar free of "Reference" by default.
+  // Individual pages can still set their own titles if desired.
+  title: { default: "", template: "%s" },
   description: "Local-first canvas for building layouts by dropping images onto an infinite board.",
   manifest: "/manifest.webmanifest",
 };

@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssetWithAi } from "@/server/db/types";
 import { THEME_ACCENT_RGB } from "@/lib/theme";
 
+// Keep fullscreen/lightbox corners consistent with canvas sprites.
+const LIGHTBOX_CORNER_RADIUS_PX = 22;
+
 type Segment = {
   tag: string;
   svg: string | null;
@@ -316,22 +319,27 @@ export function AssetLightbox(props: {
     >
       {ghostStyle ? (
         <div style={{ ...ghostStyle, transform: ghostTransform }}>
-          {isVideo ? (
-            <video
-              src={asset.storage_url}
-              className="h-full w-full object-contain"
-              muted
-              playsInline
-            />
-          ) : (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={asset.storage_url}
-              alt=""
-              className="h-full w-full object-contain"
-              draggable={false}
-            />
-          )}
+          <div
+            className="h-full w-full overflow-hidden"
+            style={{ borderRadius: LIGHTBOX_CORNER_RADIUS_PX }}
+          >
+            {isVideo ? (
+              <video
+                src={asset.storage_url}
+                className="h-full w-full object-contain"
+                muted
+                playsInline
+              />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={asset.storage_url}
+                alt=""
+                className="h-full w-full object-contain"
+                draggable={false}
+              />
+            )}
+          </div>
         </div>
       ) : null}
 
@@ -345,24 +353,37 @@ export function AssetLightbox(props: {
         <div className="flex min-h-0 flex-1 items-center justify-center p-4 md:p-8">
           <div className="relative h-full w-full max-w-[min(1100px,100%)]">
             {isVideo ? (
-              <video
-                data-asset-lightbox-target="true"
-                src={asset.storage_url}
-                controls
-                playsInline
-                className={"h-full w-full object-contain " + (animating ? "opacity-0" : "opacity-100")}
-              />
+              <div
+                className="h-full w-full overflow-hidden"
+                style={{ borderRadius: LIGHTBOX_CORNER_RADIUS_PX }}
+              >
+                <video
+                  data-asset-lightbox-target="true"
+                  src={asset.storage_url}
+                  controls
+                  playsInline
+                  className={
+                    "video-controls-white h-full w-full object-contain " +
+                    (animating ? "opacity-0" : "opacity-100")
+                  }
+                />
+              </div>
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
-              <img
-                data-asset-lightbox-target="true"
-                ref={imgRef}
-                src={asset.storage_url}
-                alt={asset.original_name || "asset"}
-                className={"h-full w-full object-contain " + (animating ? "opacity-0" : "opacity-100")}
-                draggable={false}
-                onLoad={() => recomputeImageFit()}
-              />
+              <div
+                className="h-full w-full overflow-hidden"
+                style={{ borderRadius: LIGHTBOX_CORNER_RADIUS_PX }}
+              >
+                <img
+                  data-asset-lightbox-target="true"
+                  ref={imgRef}
+                  src={asset.storage_url}
+                  alt={asset.original_name || "asset"}
+                  className={"h-full w-full object-contain " + (animating ? "opacity-0" : "opacity-100")}
+                  draggable={false}
+                  onLoad={() => recomputeImageFit()}
+                />
+              </div>
             )}
 
             {/* Segment overlay (SVG preferred, bbox fallback) */}
