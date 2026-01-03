@@ -41,6 +41,11 @@ jobs:
           cd desktop
           npm ci
 
+      - name: Generate app icons
+        run: |
+          cd desktop/src-tauri
+          npx --no-install tauri icon ../icon.png
+
       - name: Bundle Node into the app (required by desktop build)
         run: |
           mkdir -p desktop/src-tauri/resources/bin
